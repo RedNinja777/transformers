@@ -87,12 +87,29 @@ FINALIZE_INPUTS_DOCSTRING = r"""
 
 """
 
+# Python's abstract base classes are like Java's interfaces. 
+# Python's abc module provides the metaclass ABCMeta for defining ABCs and a helper class ABC to alternatively define ABCs through inheritance.
+# The abc module also provides a decorator @abc.abstractmethod indicating abstract methods.
+# Using this decorator requires that the class�s metaclass is ABCMeta or is derived from it. 
+# A class that has a metaclass derived from ABCMeta cannot be instantiated unless all of its abstract methods and properties are overridden. 
+
+# Unlike Java abstract methods, python abstract methods may have an implementation. 
+# This implementation can be called via the super() mechanism from the class that overrides it. 
+
 
 class BeamScorer(ABC):
     """
     Abstract base class for all beam scorers that are used for [`~PreTrainedModel.beam_search`] and
     [`~PreTrainedModel.beam_sample`].
     """
+
+    # If this class is not inherited from ABC, or no methods are decorated by @abstractmethod, then the class can be instantiated.
+    # But when the methods are called on the instances, exceptions are thrown.
+    # This is the old way.
+
+    # Defining an abstract class that is not supposed to be instantiated by inheriting from ABC and declare @abstractmethod prevents it from being instantiated.
+
+    # Note that python does not support function/method overloading.
 
     @abstractmethod
     @add_start_docstrings(PROCESS_INPUTS_DOCSTRING)
@@ -170,15 +187,32 @@ class BeamSearchScorer(BeamScorer):
         num_beam_groups: Optional[int] = 1,
         max_length: Optional[int] = None,
     ):
+        # !! batch_size NEVER includes num_beams!! It might be expanded by num_return_sequences as explained below. 
+        # for greedy beam search or group beam search, it's the actual batch_size before expanding input_ids batch dimension by num_beams.
+        # for sample beam search, batch_size is actual batch_size * num_return_sequences, before input_ids batch dimension is expanded by num_beams * num_return_sequences
+
+        # num_beam_hyps_to_keep is num_return_sequences per example for greedy and group beam search. It's 1 for beam sample because sample already expanded number of examples.
+
+        # Does max_length include eos_token?
+        # Yes, the entire sequence, including possible eos_token, must be <= max_length.
+        # But not all sequences can have eos_token at the end, because the sequences already reach or be truncated by max_length.
+        # Note that max_length also includes <bos> for encoder-decoder models, and prompt for decoder-only models.
+
         self.num_beams = num_beams
         self.device = device
         self.length_penalty = length_penalty
         self.do_early_stopping = do_early_stopping
         self.num_beam_hyps_to_keep = num_beam_hyps_to_keep
         self.num_beam_groups = num_beam_groups
+        # group_size means for any example, there can be multiple beam groups, and each beam group can contain multiple beams.
+        # when there is no grouping, i.e., only one group per example, then group_size = num_beams
         self.group_size = self.num_beams // self.num_beam_groups
 
+        # when is this used?
         self._is_init = False
+
+        # for each example in the batch, create one BeamHypotheses object; each object holds up to num_beams FINISHED sequences.
+        # beam search of each example are run in parallel.
         # self._beam_hyps[i*self.num_beam_groups+j] is the beam_hyps of the j-th group in the i-th mini-batch.
         # If group_beam_search is not used, the list consists of `batch_size` beam_hyps.
         self._beam_hyps = [
@@ -195,6 +229,8 @@ class BeamSearchScorer(BeamScorer):
         self._done = torch.tensor(
             [False for _ in range(batch_size * self.num_beam_groups)], dtype=torch.bool, device=self.device
         )
+        # self._done=True for one example means this example already has num_beams finished sequences stored in this example's BeamHypotheses object, 
+        # and if not do_early_stopping, all UNFINISHED candidate sequences (including candidate next_tokens) are worse than finished sequences.
 
         if not isinstance(num_beams, int) or num_beams <= 1:
             raise ValueError(
@@ -224,10 +260,25 @@ class BeamSearchScorer(BeamScorer):
         group_index: Optional[int] = 0,
         decoder_prompt_len: Optional[int] = 0,
     ) -> Dict[str, torch.Tensor]:
+        # input_ids shape  [batch_size * num_beams (* num_return_sequences), cur_len]; input_ids do NOT contain the current candidate token being generated. 
+        # next_scores, next_indices and next_tokens are all tensor of shape [batch_size, 2 * num_beams], they are all sorted in decreasing order of next_scores.
+        # next_scores is the sum of logprobs of generated tokens (including current token being generated) so far, shape [batch_size, 2 * num_beams]. scores are NOT length normalized.
+        # next_indices is the beam index for the selected beam search sequence of an example, value within [0, num_beams - 1], shape [batch_size, 2 * num_beams]
+        # next_tokens is the token_id for current token being generated, value within [0, vocab_size - 1], shape [batch_size, 2 * num_beams]
+
+        # !! input_ids is NOT modified in this function !!
+        # input_ids include <bos> token for encoder-decoder models, and prompt tokens for decoder only models like GPT.
+
         # add up to the length which the next_scores is calculated on (including decoder prompt)
         cur_len = input_ids.shape[-1] + 1
+        # input_ids does not include current candidate token being generated.
         batch_size = len(self._beam_hyps) // self.num_beam_groups
+        # !! input_ids batch dim is already expanded by num_beams (and also num_return_sequences for sample beam search).
+        # However, batch_size does NOT include num_beams, but include num_return_sequences for sample beam search
 
+        # can this be True in group beam search?
+        # assert batch_size == (input_ids.shape[0] // self.group_size)
+        # when there is no grouping, i.e., only one group per example, then self.group_size = self.num_beams
         if not (batch_size == (input_ids.shape[0] // self.group_size)):
             if self.num_beam_groups > 1:
                 raise ValueError(
@@ -241,6 +292,9 @@ class BeamSearchScorer(BeamScorer):
                 )
 
         device = input_ids.device
+
+        # these tensors will be filled with top num_beams scored next_tokens for each example that are not [EOS] and returned to caller in beam_search().
+        # these tokens will be appended to input_ids in beam_search().
         next_beam_scores = torch.zeros((batch_size, self.group_size), dtype=next_scores.dtype, device=device)
         next_beam_tokens = torch.zeros((batch_size, self.group_size), dtype=next_tokens.dtype, device=device)
         next_beam_indices = torch.zeros((batch_size, self.group_size), dtype=next_indices.dtype, device=device)
@@ -252,7 +306,12 @@ class BeamSearchScorer(BeamScorer):
 
         for batch_idx in range(batch_size):
             batch_group_idx = batch_idx * self.num_beam_groups + group_index
+            # process for each example of the batch independently. batch_idx is the example index in the batch.
+            # Each example has one BeamHypotheses object, and one BeamHypotheses object holds up to num_beams FINISHED sequences.
+            # Each example also has 2* num_beams passed in candidate tokens and corresponding candidate sequence scores
             if self._done[batch_group_idx]:
+                # self._done=True for one example means this example already has num_beams finished sequences stored in this example's BeamHypotheses object, 
+                # and all candidate sequences (including candidate next_tokens) are worse than finished sequences.
                 if self.num_beams < len(self._beam_hyps[batch_group_idx]):
                     raise ValueError(f"Batch can only be done if at least {self.num_beams} beams have been generated")
                 if eos_token_id is None or pad_token_id is None:
@@ -262,18 +321,31 @@ class BeamSearchScorer(BeamScorer):
                 next_beam_tokens[batch_idx, :] = pad_token_id
                 next_beam_indices[batch_idx, :] = 0
                 continue
+                # if an example is FINISHED generating, it no longer needs to do beam search
+                # So simply return pad_token to append to the input_ids because they are dummy.
 
             # next tokens for this sentence
+            # Select the top num_beams next tokens which are not EOS for this example.
+            # since 2 * num_beams candidate tokens are supplied, there are at least num_beams of them are not EOS. 
+            # beam_idx is set as new beam index of an example, for the beam/sequence that is NOT finished after appending next_token to the generated sequence
             beam_idx = 0
+            # iterate over 2* num_beams next token candidates for each example. 
+            # candidates are already sorted in decreasing order of next_score, the sum of logprobs of candidate sequence so far.
             for beam_token_rank, (next_token, next_score, next_index) in enumerate(
                 zip(next_tokens[batch_idx], next_scores[batch_idx], next_indices[batch_idx])
             ):
+                # beam_token_rank value is within [0, 2 * num_beams - 1]. value 0 has the highest next_score;
+                # batch_beam_idx is the current index to the dim 0 of input_ids, range is [0, batch_size * num_beams - 1]
                 batch_beam_idx = batch_idx * self.group_size + next_index
                 # add to generated hypotheses if end of sentence
+                # currently best generated finished sequences are managed by BeamHypotheses object of each example
                 if (eos_token_id is not None) and (next_token.item() in eos_token_id):
                     # if beam_token does not belong to top num_beams tokens, it should not be added
+                    # This is just a short cut to save some computing, because anyway in the add() method of BeamHypotheses, inferior beams will be deleted.
                     is_beam_token_worse_than_top_num_beams = beam_token_rank >= self.group_size
                     if is_beam_token_worse_than_top_num_beams:
+                        # why ? correct? if so what's the point of selecting 2* num_beams instead of just num_beams?
+                        # Note here the token is EOS. But I'd still  remove this continue logic.
                         continue
                     if beam_indices is not None:
                         beam_index = beam_indices[batch_beam_idx]
@@ -287,8 +359,13 @@ class BeamSearchScorer(BeamScorer):
                         beam_indices=beam_index,
                         generated_len=cur_len - decoder_prompt_len,
                     )
+                    # !! Note that the current token, which is [EOS], is NOT added to input_ids which is passed to BeamHypotheses.add().
+                    # All 
                 else:
                     # add next predicted token since it is not eos_token
+                    # and so the sequence is NOT finished at this step.
+                    # generated sequence so far in this beam is not finished yet, so don't add to BeamHypotheses object which only contains finished tokens.
+                    # !! Note: reaching here means next_token is NOT eos_token !!
                     next_beam_scores[batch_idx, beam_idx] = next_score
                     next_beam_tokens[batch_idx, beam_idx] = next_token
                     next_beam_indices[batch_idx, beam_idx] = batch_beam_idx
@@ -297,6 +374,7 @@ class BeamSearchScorer(BeamScorer):
                 # once the beam for next step is full, don't add more tokens to it.
                 if beam_idx == self.group_size:
                     break
+                # only keep top num_beams unfinished sequences
 
             if beam_idx < self.group_size:
                 raise ValueError(
@@ -305,10 +383,14 @@ class BeamSearchScorer(BeamScorer):
                 )
 
             # Check if we are done so that we can save a pad step if all(done)
+            # Note beam_hyp is of the example batch_idx, next_scores[batch_idx] are sum of logprobs of candidate sequences so far (including next_tokens) for example batch_idx
             self._done[batch_group_idx] = self._done[batch_group_idx] or self._beam_hyps[batch_group_idx].is_done(
                 next_scores[batch_idx].max().item(), cur_len, decoder_prompt_len
             )
 
+        # all returned tensors have shape [batch_size * self.group_size]. when there is only 1 group, self.group_size = num_beams.
+        # they are the top num_beams tokens generated at this step for sequences that are NOT finished.
+        # Specifically, next_beam_indices is actually batch_beam_idx, which is indexing into last step's input_ids's batch dim, value within [0, batch_size * num_beams - 1]
         return UserDict(
             {
                 "next_beam_scores": next_beam_scores.view(-1),
@@ -329,6 +411,15 @@ class BeamSearchScorer(BeamScorer):
         beam_indices: Optional[torch.LongTensor] = None,
         decoder_prompt_len: Optional[int] = 0,
     ) -> Tuple[torch.LongTensor]:
+        # input_ids are sequences NOT finished, i.e., without eos_token, shape [batch_size * num_beams, cur_len]
+        # final_beam_scores are sum of logprobs of input_ids, shape [batch_size * num_beams]. They are NOT length normalized
+        # final_beam_indices is not used in this function
+        # final_beam_tokens in not used in this function
+
+        # !! input_ids is NOT modified in this function !!
+        # When is finalize() called? 
+        # finalize() is called either when all examples are done with generating (already have num_beams generated sequences), 
+        # or max_len of sequences is reached, or other termination condition such as time limit, ...
         batch_size = len(self._beam_hyps) // self.num_beam_groups
 
         if eos_token_id is not None and not isinstance(eos_token_id, torch.Tensor):
@@ -833,6 +924,7 @@ class ConstrainedBeamSearchScorer(BeamScorer):
         for batch_idx, beam_hyp in enumerate(self._beam_hyps):
             if self._done[batch_idx]:
                 continue
+                # because this example is done (already have num_beams FINISHED sequences).
 
             # all open beam hypotheses are added to the beam hypothesis
             # beam hypothesis class automatically keeps the best beams
@@ -842,6 +934,7 @@ class ConstrainedBeamSearchScorer(BeamScorer):
                 batch_beam_idx = batch_idx * self.num_beams + beam_id
                 final_score = final_beam_scores[batch_beam_idx].item()
                 final_tokens = input_ids[batch_beam_idx]
+                # the whole sequence of input_ids of this example beam
 
                 completes_constraint = self.check_completes_constraints(final_tokens.cpu().tolist())
                 if completes_constraint:
@@ -864,6 +957,7 @@ class ConstrainedBeamSearchScorer(BeamScorer):
                         break
 
         # select the best hypotheses
+        # self.num_beam_hyps_to_keep is num_return_sequences for beam greedy and group; for beam sample it's 1.
         sent_lengths = input_ids.new(batch_size * self.num_beam_hyps_to_keep)
         best = []
         best_indices = []
@@ -871,7 +965,13 @@ class ConstrainedBeamSearchScorer(BeamScorer):
 
         # retrieve best hypotheses
         for i, beam_hyp in enumerate(self._beam_hyps):
+            # i is example index in the batch. For each example select the top self.num_beam_hyps_to_keep finished sequences.
+            # self.num_beam_hyps_to_keep is num_return_sequences per example for greedy and group beam search. 
+            # It's 1 for beam sample because sample already expanded number of examples.
+            # beam_hyp of each example has num_beams sequences 
             sorted_hyps = sorted(beam_hyp.beams, key=lambda x: x[0])
+            # sorted order is increasing by default? wrong?
+            # No, it's correct. because list.pop() will remove from the end of list, i.e., the largest socres.
             for j in range(self.num_beam_hyps_to_keep):
                 best_hyp_tuple = sorted_hyps.pop()
                 best_score = best_hyp_tuple[0]
@@ -886,6 +986,9 @@ class ConstrainedBeamSearchScorer(BeamScorer):
                 best_indices.append(best_index)
 
                 best_scores[i * self.num_beam_hyps_to_keep + j] = best_score
+        # due to loop condition in generat(), sent_lengths is always <= max_length
+        # best is a list of FINISHED sequences tensors, length of the list is batch_size * num_beam_hyps_to_keep
+        # best_scores is a tensor of size [batch_size * num_beam_hyps_to_keep], it's finished sequence score and normalized by length (with penalty)
 
         # prepare for adding eos
         sent_lengths_max = sent_lengths.max().item() + 1
@@ -899,6 +1002,8 @@ class ConstrainedBeamSearchScorer(BeamScorer):
             indices = None
 
         # shorter batches are padded if needed
+        # which happends if not all FINISHED sequences are of the same length
+        # padding token will be after eos_token
         if sent_lengths.min().item() != sent_lengths.max().item():
             if pad_token_id is None:
                 raise ValueError("`pad_token_id` has to be defined")
@@ -908,6 +1013,7 @@ class ConstrainedBeamSearchScorer(BeamScorer):
             indices.fill_(-1)
 
         # fill with hypotheses and eos_token_id if the latter fits in
+        # padding tokens will be after eos_token, if there is room
         for i, (hypo, best_idx) in enumerate(zip(best, best_indices)):
             decoded[i, : sent_lengths[i]] = hypo
 
@@ -925,19 +1031,35 @@ class ConstrainedBeamSearchScorer(BeamScorer):
                 "beam_indices": indices,
             }
         )
+        # both returned values are tensors
 
 
 class BeamHypotheses:
+    # Every example should have its own BeamHypotheses object.
+    # One BeamHypotheses object holds up to num_beams of beam hypothesis in the self.beams list.
+    # One beam hypothesis is a finished sequence that has no more tokens to generate.
+
     def __init__(self, num_beams: int, length_penalty: float, early_stopping: bool, max_length: Optional[int] = None):
         """
         Initialize n-best list of hypotheses.
         """
+        # one BeamHypotheses object is for one example, to manage multiple beam sequences for the example.
+        # self.max_length = max_length - 1  # ignoring bos_token. upper limit for length of generated sequence. leave one room that accounts for eos_token that will be added later.
+        # but it seems this self.max_length is not used at all?
         self.length_penalty = length_penalty
+        # 1 means no penalty. > 1 means longer sequence is preferred; < 1 means shorter sequence is preferred.
         self.early_stopping = early_stopping
+        # True or False. if set to `True` beam search is stopped when at least `num_beams` sentences finished per example in the batch
         self.max_length = max_length
         self.num_beams = num_beams
+        # the upper limit of hypotheses to add for one example
         self.beams = []
+        # list of tuples (seq_score: float, seq_ids: LongTensor)
         self.worst_score = 1e9
+        # real seq scores are negative (logprobs); the larger score the better sequence.
+        # self.beams is a list of "finished" generated sequences of one example, i.e., that has eos token. They are all candidates for final.
+        # score of a finished sequence is sum_logprobs / (seq_len ** self.length_penalty)
+        # finished sequence is called hyp here, is a long tensor of shape [seq_len] 
 
         if not isinstance(self.early_stopping, bool) and self.max_length is None:
             raise ValueError(
@@ -950,6 +1072,7 @@ class BeamHypotheses:
         Number of hypotheses in the list.
         """
         return len(self.beams)
+        # The add() method makes sure that self.beams list has <= self.num_beams hypotheses
 
     def add(
         self,
@@ -961,18 +1084,30 @@ class BeamHypotheses:
         """
         Add a new hypothesis to the list.
         """
+        # !! this function is only called for a finished sequence, i.e., eos token is just generated.
+        # argument hyp is a finished sequence, i.e., that has eos token. shape [cur_len]
+        # argument sum_logprobs is the sum of logprobs of all tokens of hyp, without length normalization
         if generated_len is not None:
             score = sum_logprobs / (generated_len**self.length_penalty)
         # This 'else' case exists for retrocompatibility
         else:
             score = sum_logprobs / (hyp.shape[-1] ** self.length_penalty)
+            # normalizing seq score by length of sequence is always needed, using penalty or not.
+        # the larger the score, the more likely to be selected
 
         if len(self) < self.num_beams or score > self.worst_score:
+            # add finished sequences. Note these sequences do NOT have eos_token when this add() is called by BeamSearchScorer's .process() or .finalize(). 
             self.beams.append((score, hyp, beam_indices))
             if len(self) > self.num_beams:
+                # if we reach here, it means before adding the new generated sequence hyp, we already have len(self) = len(self.beams) = self.num_beams, 
+                # but because score > self.worst_score, we have now len(self.beams) = self.num_beams + 1. Need to pop the lowest score out
                 sorted_next_scores = sorted([(s, idx) for idx, (s, _, _) in enumerate(self.beams)])
+                # sort by seq_score in increasing order. 
+                # without a comparator function, Collections that support order comparison (such as list, tuple, etc.) are ordered the same as their first unequal elements 
                 del self.beams[sorted_next_scores[0][1]]
+                # remove the seq with lowest score from self.beams which is a list of tuples. Why? because a new one is being added.
                 self.worst_score = sorted_next_scores[1][0]
+                # should be before del? No need because what's deleted is in list self.beams, not in sorted_next_scores list
             else:
                 self.worst_score = min(score, self.worst_score)
 
@@ -982,11 +1117,16 @@ class BeamHypotheses:
         one in the heap, then we are done with this sentence.
         """
 
+        # best_sum_logprobs is the current best score of all UNFINISHED beam sequencess of this example. 
+        # make sure that best_sum_logprobs is negative for comparing normalized values below to be valid!
+
         if len(self) < self.num_beams:
             return False
 
         # `True`: stop as soon as at least `num_beams` hypotheses are finished
         if self.early_stopping is True:
+            # if early_stopping = True, then once there are num_beams finished generated sequences of one example, that example is done with beam search. 
+            # Most of the time, early_stopping makes quality much worse.
             return True
         # `False`: heuristic -- compute best possible score from `cur_len`, even though it is not entirely accurate
         #  when `length_penalty` is positive. See the discussion below for more details.
@@ -997,6 +1137,9 @@ class BeamHypotheses:
             return ret
         # `"never"`: compute the best possible score, depending on the signal of `length_penalty`
         else:
+            # if early_stopping = False, then this BeamHypotheses is like a min heap for one example; the min score is recorded in self.worst_score.
+            # generated sequence score is actually normalized per word. So don't punish longer sequence (too much).
+            # always cur_len > 1, so length_penalty > 1 means penalize less because best_sum_logprobs < 0!
             # `length_penalty` > 0.0 -> max denominator is obtaned from `max_length`, not from `cur_len` -> min
             # abs(`highest_attainable_score`) is obtained -> `highest_attainable_score` is negative, hence we obtain
             # its max this way
@@ -1011,3 +1154,7 @@ class BeamHypotheses:
                 highest_attainable_score = best_sum_logprobs / (cur_len - decoder_prompt_len) ** self.length_penalty
             ret = self.worst_score >= highest_attainable_score
             return ret
+
+            # Is length penalty like repetition penalty, dependent on positive or negative of scores?
+            # No, because best_sum_logprobs is computed from log_softmax() which is always negative.
+

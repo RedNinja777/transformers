@@ -33,6 +33,27 @@ VOCAB_FILES_NAMES = {
     "merges_file": "merges.txt",
 }
 
+PRETRAINED_VOCAB_FILES_MAP = {
+    "vocab_file": {
+        "openai/clip-vit-base-patch32": "https://huggingface.co/openai/clip-vit-base-patch32/resolve/main/vocab.json",
+    },
+    "merges_file": {
+        "openai/clip-vit-base-patch32": "https://huggingface.co/openai/clip-vit-base-patch32/resolve/main/merges.txt",
+    },
+}
+
+PRETRAINED_POSITIONAL_EMBEDDINGS_SIZES = {
+    "openai/clip-vit-base-patch32": 77,
+}
+
+
+PRETRAINED_INIT_CONFIGURATION = {
+    "openai/clip-vit-base-patch32": {},
+}
+
+
+# Similar to GPT2 tokenization (BPE)
+
 
 @lru_cache()
 def bytes_to_unicode():
@@ -45,18 +66,27 @@ def bytes_to_unicode():
     decent coverage. This is a significant percentage of your normal, say, 32K bpe vocab. To avoid that, we want lookup
     tables between utf-8 bytes and unicode strings.
     """
+    # what is bs? byte stream? in a byte number can be at most 255?
     bs = (
         list(range(ord("!"), ord("~") + 1)) + list(range(ord("¡"), ord("¬") + 1)) + list(range(ord("®"), ord("ÿ") + 1))
     )
+    # ord("!") = 33, space is 32. ord("~") = 126. ord("¡") = 161 = \u00a1, ord("¬") = 172 = \u00ac. ord("®") = 174 = \u00ae, ord("ÿ") = 255 = \u00ff.
+    # so all 0-9, A-Z, a-z, and common symbols are preserved their original ASCII symbols. All these are PRINTABLE. There are 188 of them. 
     cs = bs[:]
     n = 0
     for b in range(2**8):
         if b not in bs:
+            # these are UNPRINTABLE characters between [0, 255], and are converted to PRINTABLE Unicode characters. There are 68 of them. 
+            # n goes from 0 to 67, and so Unicode code point goes from 256 (\u0100) to 323 (\u0143)
             bs.append(b)
+            # use Unicode code points [256 (\u0100), 323 (\u0143)]] to represent other unused chars in [0, 255). 0 is NULL and become 256 = \u0100 = Ā. 
             cs.append(2**8 + n)
             n += 1
+    # ? convert Unicode code point to Unicode symbol. space (32) becomes 256 + 32 = 288 as its code point (\u0120), Ġ. '\t' becomes 256 + 9 = 265, \u0109 ĉ.
     cs = [chr(n) for n in cs]
     return dict(zip(bs, cs))
+    # now bs and cs have 256 elements. bs are still numbers in 0-255. 
+    # Unicode code point in cs are in ranges [33, 126], [161 (\u00a1), 172 (\u00ac)], [174 (\u00ae), 255 (\u00ff)], [256 (\u0100), 323 (\u0143)]. 
 
 
 def get_pairs(word):
@@ -291,9 +321,12 @@ class CLIPTokenizer(PreTrainedTokenizer):
         pad_token="<|endoftext|>",  # hack to enable padding
         **kwargs,
     ):
+        # In vocab.json, "<|startoftext|>":49406, "<|endoftext|>":49407
         bos_token = AddedToken(bos_token, lstrip=False, rstrip=False) if isinstance(bos_token, str) else bos_token
         eos_token = AddedToken(eos_token, lstrip=False, rstrip=False) if isinstance(eos_token, str) else eos_token
         unk_token = AddedToken(unk_token, lstrip=False, rstrip=False) if isinstance(unk_token, str) else unk_token
+        # !! pad_token_id is 0, not the one of "<|endoftext|>"
+
         try:
             import ftfy
 
@@ -305,6 +338,9 @@ class CLIPTokenizer(PreTrainedTokenizer):
 
         with open(vocab_file, encoding="utf-8") as vocab_handle:
             self.encoder = json.load(vocab_handle)
+            ## every individual Unicode character in every key of the vocab must be a byte only and the Unicode character must be in the keys of self.byte_encoder.
+            ## every tokens in the merge file must be one of the vocab.
+        # the largest two token ids in the vocab are "<|startoftext|>":49406, "<|endoftext|>":49407
         self.decoder = {v: k for k, v in self.encoder.items()}
         self.errors = errors  # how to handle errors in decoding
         self.byte_encoder = bytes_to_unicode()
@@ -319,6 +355,15 @@ class CLIPTokenizer(PreTrainedTokenizer):
             r"""<\|startoftext\|>|<\|endoftext\|>|'s|'t|'re|'ve|'m|'ll|'d|[\p{L}]+|[\p{N}]|[^\s\p{L}\p{N}]+""",
             re.IGNORECASE,
         )
+        # RE pattern that matches some special tokens in English, space followed by letters or numbers, leading any whilespace followed by letters or numbers, 
+        #                         any whitespaces followed by non-whitespace, any whitespaces.
+        # ? matches 0 or 1 of preceding expression
+        # + matches 1 or more preceding expression
+        # * matches 0 or more preceding expression
+        # \s matches whitespace (space, multiple spaces, tab, newline)
+        # \p{L} matches a single Unicode code point in the category "letter".
+        # \p{N} matches any kind of numeric character in any script.
+
 
         super().__init__(
             errors=errors,

@@ -41,6 +41,9 @@ STOPPING_CRITERIA_INPUTS_DOCSTRING = r"""
 
 """
 
+# Python's abstract base classes are like Java's interfaces. 
+# Java uses interfaces because it doesn't have multiple inheritance, so a class implementing multiple interfaces to define its contract to outside world. 
+# Because Python has multiple inheritance there is no need of a separate concept of interface; simply use abstract base classes that define interface without implementation.
 
 class StoppingCriteria(ABC):
     """Abstract base class for all stopping criteria that can be applied during generation.
@@ -52,6 +55,7 @@ class StoppingCriteria(ABC):
     @add_start_docstrings(STOPPING_CRITERIA_INPUTS_DOCSTRING)
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs) -> torch.BoolTensor:
         raise NotImplementedError("StoppingCriteria needs to be subclassed")
+        # use @abstractmethod decorator instead?
 
 
 class MaxLengthCriteria(StoppingCriteria):

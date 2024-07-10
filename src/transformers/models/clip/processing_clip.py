@@ -104,16 +104,21 @@ class CLIPProcessor(ProcessorMixin):
 
         if text is not None:
             encoding = self.tokenizer(text, return_tensors=return_tensors, **tokenizer_kwargs)
+            # tokenizer returns a BatchEncoding object which derives UserDict. keys are input_ids, attention_mask, 
 
         if images is not None:
             image_features = self.image_processor(images, return_tensors=return_tensors, **image_processor_kwargs)
+            # image_processor() returns a BatchFeature object which derives UserDict. Can access its k/v by dot. keys are pixel_values
 
         if text is not None and images is not None:
+            # or image_features["pixel_values"] which converts to image_features.data["pixel_values"]
             encoding["pixel_values"] = image_features.pixel_values
             return encoding
         elif text is not None:
+            # text only
             return encoding
         else:
+            # images only
             return BatchEncoding(data=dict(**image_features), tensor_type=return_tensors)
 
     def batch_decode(self, *args, **kwargs):

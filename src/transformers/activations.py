@@ -73,6 +73,8 @@ class GELUActivation(nn.Module):
 
     def _gelu_python(self, input: Tensor) -> Tensor:
         return input * 0.5 * (1.0 + torch.erf(input / math.sqrt(2.0)))
+        # torch.special.erf(input, *, out=None) -> Tensor: Computes the error function of input. The error function is defined as follows:
+        # erf(x) = \frac{2}{\sqrt{\pi}} \int_{0}^{x} e^{-t^2} dt
 
     def forward(self, input: Tensor) -> Tensor:
         return self.act(input)
@@ -152,6 +154,9 @@ class MishActivation(nn.Module):
 
     def _mish_python(self, input: Tensor) -> Tensor:
         return input * torch.tanh(nn.functional.softplus(input))
+        # torch.nn.Softplus(beta=1, threshold=20) Applies the Softplus function Softplus(x)= 1/beta * log(1 + exp(beta*x)) element-wise.
+        # SoftPlus is a smooth approximation to the ReLU function and can be used to constrain the output of a machine to always be positive.
+        # For numerical stability the implementation reverts to the linear function when input * beta > threshold.
 
     def forward(self, input: Tensor) -> Tensor:
         return self.act(input)
