@@ -29,6 +29,29 @@ from ...utils.import_utils import export
 logger = logging.get_logger(__name__)
 VOCAB_FILES_NAMES = {"vocab_file": "spiece.model"}
 
+PRETRAINED_VOCAB_FILES_MAP = {
+    "vocab_file": {
+        "albert/albert-base-v1": "https://huggingface.co/albert/albert-base-v1/resolve/main/spiece.model",
+        "albert/albert-large-v1": "https://huggingface.co/albert/albert-large-v1/resolve/main/spiece.model",
+        "albert/albert-xlarge-v1": "https://huggingface.co/albert/albert-xlarge-v1/resolve/main/spiece.model",
+        "albert/albert-xxlarge-v1": "https://huggingface.co/albert/albert-xxlarge-v1/resolve/main/spiece.model",
+        "albert/albert-base-v2": "https://huggingface.co/albert/albert-base-v2/resolve/main/spiece.model",
+        "albert/albert-large-v2": "https://huggingface.co/albert/albert-large-v2/resolve/main/spiece.model",
+        "albert/albert-xlarge-v2": "https://huggingface.co/albert/albert-xlarge-v2/resolve/main/spiece.model",
+        "albert/albert-xxlarge-v2": "https://huggingface.co/albert/albert-xxlarge-v2/resolve/main/spiece.model",
+    }
+}
+
+PRETRAINED_POSITIONAL_EMBEDDINGS_SIZES = {
+    "albert/albert-base-v1": 512,
+    "albert/albert-large-v1": 512,
+    "albert/albert-xlarge-v1": 512,
+    "albert/albert-xxlarge-v1": 512,
+    "albert/albert-base-v2": 512,
+    "albert/albert-large-v2": 512,
+    "albert/albert-xlarge-v2": 512,
+    "albert/albert-xxlarge-v2": 512,
+}
 
 SPIECE_UNDERLINE = "▁"
 
@@ -161,15 +184,19 @@ class AlbertTokenizer(PreTrainedTokenizer):
     @property
     def vocab_size(self) -> int:
         return len(self.sp_model)
+        # this only includes stock vocab size, in loaded vocab file. Does NOT include new added tokens.
 
     def get_vocab(self) -> Dict[str, int]:
+        # this returns complete vocab, including new added tokens.
         vocab = {self.convert_ids_to_tokens(i): i for i in range(self.vocab_size)}
         vocab.update(self.added_tokens_encoder)
+        # new added tokens are added to vocab
         return vocab
 
     def __getstate__(self):
         state = self.__dict__.copy()
         state["sp_model"] = None
+        # ? break the reference to this module's sp_model object to avoid corruption.?
         return state
 
     def __setstate__(self, d):
@@ -184,6 +211,7 @@ class AlbertTokenizer(PreTrainedTokenizer):
 
     def preprocess_text(self, inputs):
         if self.remove_space:
+            # replace all kinds of whitespace to a single space.
             outputs = " ".join(inputs.strip().split())
         else:
             outputs = inputs
@@ -201,6 +229,8 @@ class AlbertTokenizer(PreTrainedTokenizer):
         """Tokenize a string."""
         text = self.preprocess_text(text)
         pieces = self.sp_model.encode(text, out_type=str)
+        # pieces is a list of tokens done by SentencePiece model. It handles space automatically (as SPIECE_UNDERLINE).
+
         new_pieces = []
         for piece in pieces:
             if len(piece) > 1 and piece[-1] == str(",") and piece[-2].isdigit():
@@ -229,6 +259,7 @@ class AlbertTokenizer(PreTrainedTokenizer):
 
     def convert_tokens_to_string(self, tokens):
         """Converts a sequence of tokens (string) in a single string."""
+        # input tokens is a list of individual tokens
         current_sub_tokens = []
         out_string = ""
         prev_is_special = False

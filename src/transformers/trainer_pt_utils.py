@@ -82,6 +82,9 @@ def atleast_1d(tensor_or_array: Union[torch.Tensor, np.ndarray]):
 
 def torch_pad_and_concatenate(tensor1, tensor2, padding_index=-100):
     """Concatenates `tensor1` and `tensor2` on first axis, applying padding on the second if necessary."""
+    # The dim 0 is batch dim, dim 1 is sequence length, dim 2 typically is hidden size or vocab size. 
+    # The input tensor1 and tensor2 may have different length in dim 1, i.e., sequence length. Shorter one will be padded with -100.
+    # Make sure shapes from the third dimension on are the same for both tensors.
     tensor1 = atleast_1d(tensor1)
     tensor2 = atleast_1d(tensor2)
 
@@ -90,12 +93,16 @@ def torch_pad_and_concatenate(tensor1, tensor2, padding_index=-100):
 
     # Let's figure out the new shape
     new_shape = (tensor1.shape[0] + tensor2.shape[0], max(tensor1.shape[1], tensor2.shape[1])) + tensor1.shape[2:]
+    # The new shape: dim 0 is the sum of dim 0 of two tensors, dim 1 is the max of dim 1 of two tensors; other dims remain the same
 
     # Now let's fill the result tensor
     result = tensor1.new_full(new_shape, padding_index)
     result[: tensor1.shape[0], : tensor1.shape[1]] = tensor1
     result[tensor1.shape[0] :, : tensor2.shape[1]] = tensor2
     return result
+    # Does result tensor share data with tensor1 and tensor2?
+    # !! when slicing is used, data is copied!! 
+    # So result data is separate from tensor1 and tensor2.
 
 
 def numpy_pad_and_concatenate(array1, array2, padding_index=-100):
@@ -114,6 +121,9 @@ def numpy_pad_and_concatenate(array1, array2, padding_index=-100):
     result[: array1.shape[0], : array1.shape[1]] = array1
     result[array1.shape[0] :, : array2.shape[1]] = array2
     return result
+    # Does result ndarray share data with array1 and array2?
+    # !! when slicing is used, data is copied!! 
+    # So result data is separate from tensor1 and tensor2.
 
 
 def nested_concat(tensors, new_tensors, padding_index=-100):
@@ -125,8 +135,13 @@ def nested_concat(tensors, new_tensors, padding_index=-100):
         assert (
             type(tensors) is type(new_tensors)
         ), f"Expected `tensors` and `new_tensors` to have the same type but found {type(tensors)} and {type(new_tensors)}."
+    # tensors and new_tensors need to be of same type and same size? 
+    # No. dim 0 is examples, and usually different. dim 1 is sequence length, and can vary from batch to batch. From dim 2 on should be same size. 
+
+    # REcursive: if both tensors and new_tensors are list of (lists of lists ... of) tensors, this function will concat corresponding tensors
     if isinstance(tensors, (list, tuple)):
         return type(tensors)(nested_concat(t, n, padding_index=padding_index) for t, n in zip(tensors, new_tensors))
+    # base case: both tensors and new_tensors are a single tensor/ndarray.
     elif isinstance(tensors, torch.Tensor):
         return torch_pad_and_concatenate(tensors, new_tensors, padding_index=padding_index)
     elif isinstance(tensors, Mapping):
@@ -175,6 +190,22 @@ def nested_numpify(tensors):
     return t.numpy()
 
 
+# !! torch.tensor() always copies data!! If you have a Tensor data and just want to change its requires_grad flag, use requires_grad_() or detach() to avoid a copy. 
+# If you have a numpy array and want to avoid a copy, use torch.as_tensor().
+
+# Tensor.to() does NOT detach and gradients will flow back to Tensor. For example, when you do
+#     result1 = net1(a.to('cuda:0'))
+#     result2 = net2(a.to('cuda:1'))
+# Then all the gradients will flow back all the way to tensor a properly.
+# You can check by side effect by doing: autograd.grad(out, inp). This will try to compute the gradient and raise an error if inp is not attached to out.
+
+
+# detach() Returns a new Tensor, detached from the current graph. The result will never require gradient.
+# Note: Returned Tensor shares the same storage with the original one. In-place modifications on either of them will be seen, and may trigger errors in correctness checks. 
+# IMPORTANT NOTE: Previously, in-place size / stride / storage changes (such as resize_ / resize_as_ / set_ / transpose_) to the returned tensor also update the original tensor. 
+#                 Now, these in-place changes will not update the original tensor anymore, and will instead trigger an error. 
+# For sparse tensors: In-place indices / values changes (such as zero_ / copy_ / add_) to the returned tensor will not update the original tensor anymore, and will instead trigger an error.
+
 def nested_detach(tensors):
     "Detach `tensors` (even if it's a nested list/tuple/dict of tensors)."
     if isinstance(tensors, (list, tuple)):
@@ -202,13 +233,23 @@ def nested_xla_mesh_reduce(tensors, name):
 
 
 def distributed_concat(tensor: Any, num_total_examples: Optional[int] = None) -> Any:
+    # num_total_examples is the number of actual examples in the dataset, and might be smaller than the len of SequentialDistributedSampler. 
+    # Why? There may be dummy examples added.
     try:
         if isinstance(tensor, (tuple, list)):
+            # recursive call 
+            # type(tensor) is either tuple or list
             return type(tensor)(distributed_concat(t, num_total_examples) for t in tensor)
         if isinstance(tensor, Mapping):
             return type(tensor)({k: distributed_concat(t, num_total_examples) for k, t in tensor.items()})
+        # base case is tensor is a single tensor, not a list/tuple.
         tensor = atleast_1d(tensor).contiguous()
         output_tensors = [tensor.clone() for _ in range(dist.get_world_size())]
+        # output_tensors is a list of tensors, where length of the list is world_size, and all tensors in the list are just place-holder for memory allocation. 
+        # There is even no need to detach()? This function is NOT used in training.
+        # Each rank's all_gather(output_tensors, tensor) will put the rank'th tensor into output_tensors list at the right index, in ALL processes.
+        # So after all_gather() is run in all processes/ranks, in output_tensors list, all tensors are in the correct order as input.
+        # Note every rank/process has the same complete output_tensors list.
         dist.all_gather(output_tensors, tensor)
         concat = torch.cat(output_tensors, dim=0)
 
@@ -216,6 +257,7 @@ def distributed_concat(tensor: Any, num_total_examples: Optional[int] = None) ->
         if num_total_examples is not None:
             concat = concat[:num_total_examples]
         return concat
+        # the returned concat tensor is the same in all ranks/processes, and contain gathered tensors from all processes.
     except AssertionError:
         raise AssertionError("Not currently using distributed training")
 
@@ -225,7 +267,11 @@ def distributed_broadcast_scalars(
     num_total_examples: Optional[int] = None,
     device: Optional[torch.device] = torch.device("cuda"),
 ) -> torch.Tensor:
+    # num_total_examples is the number of actual examples in the dataset, and might be smaller than the len of SequentialDistributedSampler
+    # scalars is not necessarily to be a list/tuple? Can be single scalar?
+    # scalars are python objects, not tensors.
     try:
+        # only used with GPU? distributed is all about multiple GPUs?
         tensorized_scalar = torch.tensor(scalars).to(device)
         output_tensors = [tensorized_scalar.clone() for _ in range(dist.get_world_size())]
         dist.all_gather(output_tensors, tensorized_scalar)
@@ -256,10 +302,14 @@ def torch_distributed_zero_first(local_rank: int):
         local_rank (`int`): The rank of the local process.
     """
     if local_rank not in [-1, 0]:
+        # process with local_rank 0 is not blocked; other processes are blocked and wait.
         dist.barrier()
+        # torch.distributed.barrier() Synchronizes all processes. This collective blocks processes until the whole group enters this function, if async_op is False.
     yield
+    # the flow control will return to here after all codes within the context manager are executed 
     if local_rank == 0:
         dist.barrier()
+        # process with local_rank 0 enters this function. When all processes enter this function, all processes are unblocked.
 
 
 class DistributedSamplerWithLoop(DistributedSampler):
@@ -351,12 +401,15 @@ class SequentialDistributedSampler(Sampler):
     extra samples to the sampler to make it evenly divisible (like in `DistributedSampler`) to make it easy to `gather`
     or `reduce` resulting tensors at the end of the loop.
     """
+    # Each process can pass a DistributedSampler instance as a DataLoader sampler, and load a subset of the original dataset that is exclusive to it.
 
+    # Mostly the same as torch.utils.data.distributed.DistributedSampler, only with shuffle functionality removed (so is seed).
     def __init__(self, dataset, num_replicas=None, rank=None, batch_size=None):
         warnings.warn(
             "SequentialDistributedSampler is deprecated and will be removed in v5 of Transformers.",
             FutureWarning,
         )
+        # num_replicas is number of processes/devices
         if num_replicas is None:
             if not dist.is_available():
                 raise RuntimeError("Requires distributed package to be available")
@@ -368,6 +421,7 @@ class SequentialDistributedSampler(Sampler):
         self.dataset = dataset
         self.num_replicas = num_replicas
         self.rank = rank
+        # num_samples is the total number of examples allocated to each rank (including all batches), not just one batch.
         num_samples = len(self.dataset)
         # Add extra samples to make num_samples a multiple of batch_size if passed
         if batch_size is not None:
@@ -375,27 +429,34 @@ class SequentialDistributedSampler(Sampler):
         else:
             self.num_samples = int(math.ceil(num_samples / num_replicas))
         self.total_size = self.num_samples * self.num_replicas
+        # This total_size is >= len(self.dataset). same as DistributedSampler. 
         self.batch_size = batch_size
 
     def __iter__(self):
         indices = list(range(len(self.dataset)))
+        # len(indices) is the same as len(self.dataset), is the actual number of examples in the dataset
 
         # add extra samples to make it evenly divisible
+        # duplicate some extra samples (from the beginning of the dataset) and add to indices to make it evenly divisible
         indices += indices[: (self.total_size - len(indices))]
         assert (
             len(indices) == self.total_size
         ), f"Indices length {len(indices)} and total size {self.total_size} mismatched"
 
         # subsample
+        # the list indices, to give each rank a sequential subsets of data. 
+        # This is different from DistributedSampler implementation which is leaping: indices = indices[self.rank : self.total_size : self.num_replicas].
         indices = indices[self.rank * self.num_samples : (self.rank + 1) * self.num_samples]
         assert (
             len(indices) == self.num_samples
         ), f"Indices length {len(indices)} and sample number {self.num_samples} mismatched"
 
         return iter(indices)
+        # return one data example index at a time. This is not batch_sampler.
 
     def __len__(self):
         return self.num_samples
+        # the returned len() of the distributed sampler is the total number of examples (in all batches) allocated to EACH rank.
 
 
 def get_tpu_sampler(dataset: torch.utils.data.Dataset, batch_size: int):
@@ -409,6 +470,7 @@ def nested_new_like(arrays, num_samples, padding_index=-100):
     if isinstance(arrays, (list, tuple)):
         return type(arrays)(nested_new_like(x, num_samples) for x in arrays)
     return np.full_like(arrays, padding_index, shape=(num_samples, *arrays.shape[1:]))
+    # a full array of padding_index
 
 
 def expand_like(arrays, new_seq_length, padding_index=-100):
@@ -484,9 +546,11 @@ class DistributedTensorGatherer:
         total_size = world_size if make_multiple_of is None else world_size * make_multiple_of
         self.total_samples = int(np.ceil(num_samples / total_size)) * total_size
         self.process_length = self.total_samples // world_size
+        # should divide total_size instead?
         self._storage = None
         self._offsets = None
         self.padding_index = padding_index
+        # by default use -100 as padding, instead of pad_token_id?
 
     def add_arrays(self, arrays):
         """
@@ -547,21 +611,31 @@ class LabelSmoother:
         ignore_index (`int`, *optional*, defaults to -100):
             The index in the labels to ignore when computing the loss.
     """
+    # code that is responsible for preparing "labels" tensor needs to make ignored value to -100.
+    # -100 is what PyTorch uses by default to ignore
+
+    # CrossEntropyLoss assigns weight 1 to ground truth token, and 0 to other tokens
+    # This smoothed loss assigns weight (1 - epsilon) to ground truth token, and epsilon / vocab_size to all tokens. Like epsilon greedy policy in RL.
 
     epsilon: float = 0.1
     ignore_index: int = -100
 
     def __call__(self, model_output, labels, shift_labels=False):
+        # labels shape [batch_size, seq_len]
         logits = model_output["logits"] if isinstance(model_output, dict) else model_output[0]
+        # logits shape [batch_size, seq_len, vocab_size]
         if shift_labels:
             logits = logits[..., :-1, :].contiguous()
             labels = labels[..., 1:].contiguous()
 
         log_probs = -nn.functional.log_softmax(logits, dim=-1)
+        # log_softmax is mathematically equivalent to log(softmax(x)), but numerically stable. Return a Tensor of the same dimension and shape as the input with values in the range [-inf, 0)
         if labels.dim() == log_probs.dim() - 1:
             labels = labels.unsqueeze(-1)
 
+        # Look at the ignored index and mask the corresponding log_probs.
         padding_mask = labels.eq(self.ignore_index)
+        # shape [batch_size, seq_len, 1]
         # In case the ignore_index is -100, the gather will fail, so we replace labels by 0. The padding_mask
         # will ignore them in any case.
         labels = torch.clamp(labels, min=0)
@@ -571,11 +645,31 @@ class LabelSmoother:
 
         nll_loss.masked_fill_(padding_mask, 0.0)
         smoothed_loss.masked_fill_(padding_mask, 0.0)
+        # Is this correct? probs were calculated above with logits of padding tokens?
+        # No need, because there is a whole prob distribution over vocab for every token. 
+        # Now all the probs (vocab_size of them) of an ignored token are excluded from loss by making them zero.
+
+        # Does using CrossEntropyLoss() automatically exclude ignored index? Why not using it? 
+        # Because CrossEntropyLoss() is used to compute regular NLLLoss; it won't compute smoothed loss.
+        # torch.nn.CrossEntropyLoss(weight: Optional[torch.Tensor] = None, ignore_index: int = -100, reduction: str = 'mean')
+        # This criterion combines nn.LogSoftmax() and nn.NLLLoss() in one single class. It is useful when training a classification problem with C classes. 
+        # If provided, the optional argument weight should be a 1D Tensor assigning weight to each of the classes. This is particularly useful when you have an unbalanced training set.
+        # The input is expected to contain raw, unnormalized scores for each class.
+        # input has to be a Tensor of size either (batch_size, C) or (batch_size, C, d_1, d_2, ..., d_K)
+        # The losses are averaged across examples for each minibatch. If the weight argument is specified then this is a weighted average.
+        # Output is a scalar tensor unless if reduction is 'none', then the same size as the target: (batch_size), or (batch_size, d_1, d_2, ..., d_K) 
+
+        # masked_fill_(mask: BoolTensor, value: float)
+        # Fills elements of self tensor with value where mask is True. The shape of mask must be broadcastable with the shape of the underlying tensor.
+
 
         # Take the mean over the label dimensions, then divide by the number of active elements (i.e. not-padded):
         num_active_elements = padding_mask.numel() - padding_mask.long().sum()
+        # the denominator takes account of batch_size and seq_len.
         nll_loss = nll_loss.sum() / num_active_elements
+        # negative log likelihood loss is one per (not ignored) token
         smoothed_loss = smoothed_loss.sum() / (num_active_elements * log_probs.shape[-1])
+        # smoothed_loss is averaged loss per token (not ignored) summed over all vocab of that token
         return (1 - self.epsilon) * nll_loss + self.epsilon * smoothed_loss
 
 
@@ -599,6 +693,7 @@ def get_length_grouped_indices(lengths, batch_size, mega_batch_mult=None, genera
             mega_batch_mult = 1
 
     # We need to use torch for the random part as a distributed sampler will set the random seed for torch.
+    # torch.randperm(n, ...) Returns a tensor of size (n, ), which is a random permutation of integers from 0 to n - 1.
     indices = torch.randperm(len(lengths), generator=generator)
     megabatch_size = mega_batch_mult * batch_size
     megabatches = [indices[i : i + megabatch_size].tolist() for i in range(0, len(lengths), megabatch_size)]
@@ -609,8 +704,13 @@ def get_length_grouped_indices(lengths, batch_size, mega_batch_mult=None, genera
     megabatch_maximums = [lengths[megabatch[0]] for megabatch in megabatches]
     max_idx = torch.argmax(torch.tensor(megabatch_maximums)).item()
     # Switch to put the longest element in first position
+    # so we may know whether it will run out of GPU memory.
+    # other megabatches are not sorted
     megabatches[0][0], megabatches[max_idx][0] = megabatches[max_idx][0], megabatches[0][0]
 
+    # return sum(megabatches, [])
+    # python sum(iterable, start=0) Sums start and the items of an iterable from left to right and returns the total. 
+    # The usage here is to concat list of lists into one big list.
     return [i for megabatch in megabatches for i in megabatch]
 
 
@@ -628,6 +728,7 @@ class LengthGroupedSampler(Sampler):
         model_input_name: Optional[str] = None,
         generator=None,
     ):
+        # lengths is a list of ints for the entire dataset (not just for a batch), one for each example in the dataset, and is the seq_len of "input_ids"
         if dataset is None and lengths is None:
             raise ValueError("One of dataset and lengths must be provided.")
 
@@ -653,9 +754,13 @@ class LengthGroupedSampler(Sampler):
         self.generator = generator
 
     def __len__(self):
+        # __len__() method that returns the length of the returned iterators.        
+        # here is the length of the whole dataset
         return len(self.lengths)
 
     def __iter__(self):
+        # How often is this method called? This method is only called by iter() and should return an iterator. To iterate an iterator, use next(). 
+        # return an iterator, which returns one index at a time
         indices = get_length_grouped_indices(self.lengths, self.batch_size, generator=self.generator)
         return iter(indices)
 
@@ -678,6 +783,7 @@ class DistributedLengthGroupedSampler(DistributedSampler):
         lengths: Optional[List[int]] = None,
         model_input_name: Optional[str] = None,
     ):
+        # lengths is a list of ints for the entire dataset (not just for a batch), one for each example in the dataset, and is the seq_len of "input_ids"
         if dataset is None and lengths is None:
             raise ValueError("One of dataset and lengths must be provided.")
         if num_replicas is None:
@@ -728,9 +834,13 @@ class DistributedLengthGroupedSampler(DistributedSampler):
         self.seed = seed
 
     def __iter__(self) -> Iterator:
+        # How often is this method called?
         # Deterministically shuffle based on epoch and seed
+        # torch.Generator(device='cpu') Creates and returns a generator object that manages the state of the algorithm which produces pseudo random numbers. 
+        # Used as a keyword argument in many In-place random sampling functions.
         g = torch.Generator()
         g.manual_seed(self.seed + self.epoch)
+        # ? self.seed and self.epoch do not change? Need to call self.set_epoch(epoch) to update self.epoch at the beginning of each training epoch.
         indices = get_length_grouped_indices(self.lengths, self.batch_size, generator=g)
 
         if not self.drop_last:

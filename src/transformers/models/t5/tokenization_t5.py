@@ -124,6 +124,14 @@ class T5Tokenizer(PreTrainedTokenizer):
     vocab_files_names = VOCAB_FILES_NAMES
     model_input_names = ["input_ids", "attention_mask"]
 
+
+    # T5 pretraining by masking (span of) tokens (by sentinel) can be found at 
+    # https://github.com/google-research/text-to-text-transfer-transformer/blob/9fd7b14a769417be33bc6c850f9598764913c833/t5/data/preprocessors.py#L2117
+    # There are also other noising fucntions such as randomly replacing tokens, permute tokens, delete tokens, 
+
+    # pytorch version?
+
+
     def __init__(
         self,
         vocab_file,
@@ -149,7 +157,9 @@ class T5Tokenizer(PreTrainedTokenizer):
         self.sp_model = spm.SentencePieceProcessor(**self.sp_model_kwargs)
         self.sp_model.Load(vocab_file)
 
+        # Add extra_ids to the special token list
         if additional_special_tokens is not None:
+            # Check that we have the right number of extra_id special tokens
             extra_tokens = [x for x in additional_special_tokens if "<extra_id_" in str(x)]
             if len(extra_tokens) < 1:
                 additional_special_tokens += [f"<extra_id_{i}>" for i in range(extra_ids)]
@@ -191,6 +201,7 @@ class T5Tokenizer(PreTrainedTokenizer):
             unk_token=unk_token,
             pad_token=pad_token,
             extra_ids=extra_ids,
+            # add special tokens not in original vocab
             additional_special_tokens=additional_special_tokens,
             sp_model_kwargs=self.sp_model_kwargs,
             legacy=legacy,
@@ -426,6 +437,7 @@ class T5Tokenizer(PreTrainedTokenizer):
             else:
                 current_sub_tokens.append(token)
                 prev_is_special = False
+        # handle the last unhandled (in the for loop) current_sub_tokens
         out_string += self.sp_model.decode(current_sub_tokens)
         return out_string.strip()
 

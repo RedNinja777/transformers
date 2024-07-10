@@ -193,6 +193,58 @@ TORCH_INIT_FUNCTIONS = {
 }
 
 
+import sys
+
+def replace(target_obj, is_allowed=True):
+    """ from fastseq: https://github.com/microsoft/fastseq
+    A decorator to replace the specified obj.
+    `target_obj` can be a class or a function.
+    Example:
+    ```python
+    class A:
+        def f(self):
+            print('class A')
+    @replace(A)
+    class B:
+        def f(self):
+            print('class B')
+    ```
+    Args:
+        target_obj (class/func/method): a class, method, or function to be
+                                        replaced.
+    Returns:
+        A decorator function to replace the input object.
+    """
+    def decorator(new_obj):
+        if not is_allowed:
+            return target_obj
+#        if target_obj in OPTIMIZED_CLASSES:
+#            logger.warning("{} has been optimized again.".format(target_obj))
+        setattr(new_obj, '__replaced_class__', target_obj)
+#        OPTIMIZED_CLASSES[target_obj] = new_obj
+        for k, v in list(sys.modules.items()):
+            if (target_obj.__name__ in v.__dict__
+                and v.__dict__[target_obj.__name__] is target_obj):
+                delattr(sys.modules[k], target_obj.__name__)
+                setattr(sys.modules[k], target_obj.__name__, new_obj)
+                logger.warning("In module {}, {} is replaced by {}".format(
+                    k, target_obj, new_obj))
+            # replace target_obj if it is used as the base classes.
+            for key in list(v.__dict__.keys()):
+                if (inspect.isclass(v.__dict__[key]) and
+                    v.__dict__[key] != new_obj and
+                    target_obj in v.__dict__[key].__bases__):
+                    idx = v.__dict__[key].__bases__.index(target_obj)
+                    bases = list(v.__dict__[key].__bases__)
+                    bases[idx] = new_obj
+                    v.__dict__[key].__bases__ = tuple(bases)
+                    logger.warning(
+                        "In module {}, the base class of {} is replaced by {}"
+                        .format(k, v.__dict__[key], new_obj))
+        return new_obj
+ 
+    return decorator
+
 @contextmanager
 def no_init_weights(_enable=True):
     """
@@ -248,6 +300,7 @@ def set_zero3_state():
 def get_parameter_device(parameter: Union[nn.Module, "ModuleUtilsMixin"]):
     try:
         return next(parameter.parameters()).device
+        # recall that Module.parameters() is an iterator; call next() to retrieve next element.
     except StopIteration:
         # For nn.DataParallel compatibility in PyTorch 1.5
 
@@ -653,16 +706,29 @@ def _find_identical(tensors: List[Set[str]], state_dict: Dict[str, torch.Tensor]
 
 def _load_state_dict_into_model(model_to_load, state_dict, start_prefix, assign_to_params_buffers=False):
     # copy state_dict so _load_from_state_dict can modify it
+    # why? Because we do not want to modify passed in object state_dict and cause surprise.
     metadata = getattr(state_dict, "_metadata", None)
+    # what's value of "_metadata"?
+    # `_metadata` is a dictionary with keys that follow the naming convention of state dict.
     state_dict = state_dict.copy()
+    # shallow copy into a new dict object.  Can use copy.copy() for shallow copy, or copy.deepcopy() for deep copy.
+    # The difference between shallow and deep copying is only relevant for compound objects (objects that contain other objects, like lists or class instances). 
+    # By "shallow copying" it means the content of the dictionary is not copied by value, but just creating a new reference.
     if metadata is not None:
         state_dict._metadata = metadata
 
     error_msgs = []
 
+    # A PyTorch module's `_load_from_state_dict` method copies parameters and buffers from state_dict into only this module's attributes, 
+    # but not the module's submoduels,
+    # Why not just use load_state_dict(), which calls _load_from_state_dict() on every submodule??
+    # what does this function do? Load parameters and buffers value from state_dict into the module, and recursively do so for the module's child modules.
     # PyTorch's `_load_from_state_dict` does not copy parameters in a module's descendants
     # so we need to apply the function recursively.
     def load(module: nn.Module, state_dict, prefix="", assign_to_params_buffers=False):
+        # what's in prefix?  prefix (str): the prefix for parameters and buffers used in this module.
+        # what does this do exactly? Load heads and base model. 
+        # That is, all model weights, including submodules weights, are loaded.
         local_metadata = {} if metadata is None else metadata.get(prefix[:-1], {})
         local_metadata["assign_to_params_buffers"] = assign_to_params_buffers
 
@@ -688,6 +754,8 @@ def _load_state_dict_into_model(model_to_load, state_dict, start_prefix, assign_
                 module._load_from_state_dict(*args)
 
         for name, child in module._modules.items():
+            # A module' ._modules attribute is populated by a module's add_module() method. 
+            # What about modules simply assigned to attribute? Also added to it automatically.
             if child is not None:
                 load(child, state_dict, prefix + name + ".", assign_to_params_buffers)
 
@@ -730,6 +798,8 @@ def _move_model_to_meta(model, loaded_state_dict_keys, start_prefix):
     `bert.pooler.dense.weight`
 
     """
+
+    # meta device was added in pt=1.9
 
     # dematerialize param storage for keys that are going to be replaced by state_dict, by
     # putting those on the meta device
@@ -906,6 +976,13 @@ class ModuleUtilsMixin:
     A few utilities for `torch.nn.Modules`, to be used as a mixin.
     """
 
+    # A hook is simply a callable object (function/interface) that is triggered. 
+    # memory hooks here are functions that does some memory snapshot
+
+    # psutil is a Python library for retrieving information on running processes and system utilization (CPU, memory, disks, network, sensors). 
+    # It is useful mainly for system monitoring, profiling and limiting process resources and management of running processes. 
+    # It implements many functionalities offered by classic UNIX command line tools such as ps, top, iotop, lsof, netstat, ifconfig, free and others. 
+
     @staticmethod
     def _hook_rss_memory_pre_forward(module, *args, **kwargs):
         try:
@@ -978,10 +1055,16 @@ class ModuleUtilsMixin:
         Returns:
             `torch.Tensor`: The inverted attention mask.
         """
+        # makes encoder_attention_mask, which is padding mask broadcastable to [batch_size, num_heads, from_seq_length, to_seq_length] 
         if encoder_attention_mask.dim() == 3:
+            # if we provide an encoder-attention mask of dimensions [batch_size, from_seq_length, to_seq_length] ourselves
+            # add a num_heads dimension
             encoder_extended_attention_mask = encoder_attention_mask[:, None, :, :]
         if encoder_attention_mask.dim() == 2:
             encoder_extended_attention_mask = encoder_attention_mask[:, None, None, :]
+            # same as attention_mask.unsqueeze(1).unsqueeze(2)
+            ## add a num_heads dimension and a seq_len_query dimension
+
         # T5 has a mask that can compare sequence ids, we can simulate this here with this transposition
         # Cf. https://github.com/tensorflow/mesh/blob/8d2465e9bc93129b913b5ccc6a59aa97abd96ec6/mesh_tensorflow
         # /transformer/transformer_layers.py#L270
@@ -1019,6 +1102,7 @@ class ModuleUtilsMixin:
 
         extended_attention_mask = causal_mask[:, None, :, :] * attention_mask[:, None, None, :]
         return extended_attention_mask
+        # return tensor broadcastable to shape [batch_size, num_heads, from_seq_length, to_seq_length] 
 
     def get_extended_attention_mask(
         self, attention_mask: Tensor, input_shape: Tuple[int], device: torch.device = None, dtype: torch.float = None
@@ -1047,7 +1131,10 @@ class ModuleUtilsMixin:
         # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
         # ourselves in which case we just need to make it broadcastable to all heads.
         if attention_mask.dim() == 3:
+            # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
+            # ourselves in which case we just need to make it broadcastable to all heads.
             extended_attention_mask = attention_mask[:, None, :, :]
+            # after expansion dim 1 is num_heads. same as attention_mask.unsqueeze(1)
         elif attention_mask.dim() == 2:
             # Provided a padding mask of dimensions [batch_size, seq_length]
             # - if the model is a decoder, apply a causal mask in addition to the padding mask
@@ -1056,8 +1143,48 @@ class ModuleUtilsMixin:
                 extended_attention_mask = ModuleUtilsMixin.create_extended_attention_mask_for_decoder(
                     input_shape, attention_mask, device
                 )
+                # batch_size, seq_length = input_shape
+                # seq_ids = torch.arange(seq_length, device=device)  # [0, 1, ..., seq_length - 1]
+                # causal_mask = seq_ids[None, None, :].repeat(batch_size, seq_length, 1) <= seq_ids[None, :, None]
+                # causal_mask is a lower triangular matrix of 1s [batch_size, seq_length, seq_length]
+                # seq_ids[None, :, None] is [[[0], [1], ...[seq_length - 1]]]
+                # seq_ids[None, None, :] is [[[0, 1, ..., seq_length - 1]]]
+                # for one example of the batch, causal_mask is like
+                ##    [[1, 0, 0]
+                ##     [1, 1, 0]
+                ##     [1, 1, 1]]
+
+                # in case past_key_values are used we need to add a prefix ones mask to the causal mask
+                # causal and attention masks must have same type with pytorch version < 1.3
+                # causal_mask = causal_mask.to(attention_mask.dtype)
+
+                # if causal_mask.shape[1] < attention_mask.shape[1]:
+                #     prefix_seq_len = attention_mask.shape[1] - causal_mask.shape[1]
+                #     causal_mask = torch.cat(
+                #         [
+                #             torch.ones(
+                #                 (batch_size, seq_length, prefix_seq_len), device=device, dtype=causal_mask.dtype
+                #             ),
+                #             causal_mask,
+                #         ],
+                #         axis=-1,
+                #     )
+
+                # extended_attention_mask = causal_mask[:, None, :, :] * attention_mask[:, None, None, :]
             else:
                 extended_attention_mask = attention_mask[:, None, None, :]
+                # same as attention_mask.unsqueeze(1).unsqueeze(2)
+                # so for every query (from) token, it has the same padding mask tokens of key (to) sequence.
+                # so even the padding token in query (from) sequence, can attend to normal tokens in key (to) sequence, just like a normal query token.
+                # the consequence is the output hidden vector of self attention of a padding token in query is NOT 0, but the values of this hidden vector is not used in next self attention due to the same masking.
+
+                ## The output hidden vector of a padding token (no masking applied) is not 0, but has values. Understand this! Don't think hidden vectors of padding tokens are all 0s!!
+                ## But the values are NOT used in any self attention calcuation. How to guarantee that? Always use together with padding mask.
+                ## Example: a sequence padding mask of one example is [1, 1, 0], where 1 is for normal token, 0 is for padding token.
+                ##          repeat or broadcast to [[1, 1, 0]
+                ##                                  [1, 1, 0]
+                ##                                  [1, 1, 0]]
+                ##          So the padding token still attends to all tokens in the sequence, and gets its hidden vector calculated. But hidden vectors of padding won't be used in calculating hidden vectors of actual tokens due to masking.
         else:
             raise ValueError(
                 f"Wrong shape for input_ids (shape {input_shape}) or attention_mask (shape {attention_mask.shape})"
@@ -1071,12 +1198,16 @@ class ModuleUtilsMixin:
         extended_attention_mask = extended_attention_mask.to(dtype=dtype)  # fp16 compatibility
         extended_attention_mask = (1.0 - extended_attention_mask) * torch.finfo(dtype).min
         return extended_attention_mask
+        # extended_attention_mask has shape [batch_size, num_heads, from_seq_length, to_seq_length]; value -inf for padding tokens, and nonvisible tokens in decoder
 
     def get_head_mask(
         self, head_mask: Optional[Tensor], num_hidden_layers: int, is_attention_chunked: bool = False
     ) -> Tensor:
         """
         Prepare the head mask if needed.
+        1.0 in head_mask indicate we keep the head
+        
+        attention_probs has shape bsz x n_heads x N x N
 
         Args:
             head_mask (`torch.Tensor` with shape `[num_heads]` or `[num_hidden_layers x num_heads]`, *optional*):
@@ -1090,22 +1221,32 @@ class ModuleUtilsMixin:
             `torch.Tensor` with shape `[num_hidden_layers x batch x num_heads x seq_length x seq_length]` or list with
             `[None]` for each layer.
         """
+        # 1.0 in head_mask indicate we keep the head, 0 indicates removing the head
+        # attention_probs has shape [batch_size, num_heads, from_seq_length, to_seq_length]
+        # input head_mask has shape [num_heads] or [num_hidden_layers,  num_heads]
+        # and head_mask is converted to broadcastable to shape [num_hidden_layers, batch_size, num_heads, from_seq_length, to_seq_length]
         if head_mask is not None:
             head_mask = self._convert_head_mask_to_5d(head_mask, num_hidden_layers)
+            # shape [num_hidden_layers, 1, num_heads, 1, 1]
             if is_attention_chunked is True:
                 head_mask = head_mask.unsqueeze(-1)
         else:
             head_mask = [None] * num_hidden_layers
+            # shape is (num_hidden_layers,), is broadcastable
 
         return head_mask
 
     def _convert_head_mask_to_5d(self, head_mask, num_hidden_layers):
         """-> [num_hidden_layers x batch x num_heads x seq_length x seq_length]"""
         if head_mask.dim() == 1:
+            # head_mask has shape (num_heads,)
             head_mask = head_mask.unsqueeze(0).unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
             head_mask = head_mask.expand(num_hidden_layers, -1, -1, -1, -1)
+            # shape [num_hidden_layers, 1, num_heads, 1, 1]
         elif head_mask.dim() == 2:
+            # head_mask has shape (num_hidden_layers, num_heads)
             head_mask = head_mask.unsqueeze(1).unsqueeze(-1).unsqueeze(-1)  # We can specify head_mask for each layer
+            # shape [num_hidden_layers, 1, num_heads, 1, 1]
         assert head_mask.dim() == 5, f"head_mask.dim != 5, instead {head_mask.dim()}"
         head_mask = head_mask.to(dtype=self.dtype)  # switch to float if need + fp16 compatibility
         return head_mask
@@ -1124,6 +1265,9 @@ class ModuleUtilsMixin:
         Returns:
             `int`: The number of parameters.
         """
+        # params = filter(lambda x: x.requires_grad, self.parameters()) if only_trainable else self.parameters()
+        # Module.parameters() returns an iterator over the module's parameters, and submodule's if recurse=True by default.
+        # built-in function filter(predict function, iterable).
 
         if exclude_embeddings:
             embedding_param_names = [
@@ -1135,6 +1279,7 @@ class ModuleUtilsMixin:
         else:
             total_parameters = list(self.parameters())
 
+        # tensor.numel and torch.numel(tensor) Returns the total number of elements in the tensor.
         total_numel = []
         is_loaded_in_4bit = getattr(self, "is_loaded_in_4bit", False)
 
@@ -1241,8 +1386,26 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
           models, `pixel_values` for vision models and `input_values` for speech models).
     """
 
+    # class attributes are like static fields; they don't appear in a class instance's __dict__, but in the class's __dict__. 
+    # name of corresponding (concrete not abstract) configuration class, a subclass of PretrainedConfig
     config_class = None
+    # pretrained_model_archive_map = {}  # a dict of model short name to file location of pretrained model weights checkpoint. deprecated.
+    # this attribute should be overridden in derived classes that has a base model, to be used as the attribute name that refers the derived class's base model.
     base_model_prefix = ""
+    # the str stored in self.base_model_prefix may, if defined in derived classes, corresponds to an attribute of derived classes; can be used to reference a base model object.
+
+    # why uses base model? 
+    #  - base model is the CORE underlying model that does most of the job, including 
+    #     -- receives model inputs (input_ids, masks, ...), 
+    #     -- goes through many transformer layers, 
+    #     -- outputs pooler hidden vector.
+    #  - base model is just a child module. Often, full model and base model are the same type of module.
+    #  - a (full) model contains a base model (so no need to implement any of the base model's functionalities), and use the output of the base model to do more, such as head.
+
+    # do (full) model and base model always use the same config object?
+    #  - typically base model is constructed inside (full) model's constructor by passing it the same config object as the (full) model.
+    #  - the config is used to describe the structure of the model, which is mostly determined by base model.
+
     main_input_name = "input_ids"
     model_tags = None
 
@@ -1306,6 +1469,9 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
 
     def __init__(self, config: PretrainedConfig, *inputs, **kwargs):
         super().__init__()
+        # this class has multiple super classes. All are called?
+
+        # required positional argument config is an instance of PretrainedConfig
         if not isinstance(config, PretrainedConfig):
             raise ValueError(
                 f"Parameter config in `{self.__class__.__name__}(config)` should be an instance of class "
@@ -1313,6 +1479,11 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
                 f"`model = {self.__class__.__name__}.from_pretrained(PRETRAINED_MODEL_NAME)`"
             )
         # Save config and origin of the pretrained weights if given in model
+
+        # Store config object as model attribute. 
+        ## The self.config is an instance of PretrainedConfig or its subclasses.
+        # self.config is used for
+        #   - describing the structure of the model (including vocab_size because it's necessary to use it to define embedding layer size)        
         if not getattr(config, "_attn_implementation_autoset", False):
             config = self._autoset_attn_implementation(
                 config, torch_dtype=torch.get_default_dtype(), check_device_map=False
@@ -1589,7 +1760,15 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
         """
         `torch.nn.Module`: The main body of the model.
         """
+        # getattr(object, name[, default]) returns the value of the named attribute of object. name must be a string. 
+        # If the string is the name of one of the object's attributes, the result is the value of that attribute. 
+        # For example, getattr(x, 'foobar') is equivalent to x.foobar.
         return getattr(self, self.base_model_prefix, self)
+        # ? what is returned? For BertPreTrainedModel, base_model_prefix="bert", so equivalent to: self.bert if self.bert else self. 
+        # For one subclass, BertForPreTraining, has attribute: self.bert = BertModel(config). So self.bert is returned.
+        # For one subclass, BertModel, no attribute self.bert is defined. So self is returned. 
+        # BertModel serves as the base model of BertPreTrainedModel family.
+
 
     @classmethod
     def can_generate(cls) -> bool:
@@ -1804,14 +1983,22 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
         """
         Returns the model's input embeddings.
 
+        Only base_model has input embeddings? 
+        Yes, embeddings are part of the base_model. Full model contains a base_model to do most of the work, and add extra layers on top of base_model's output.
+
         Returns:
             `nn.Module`: A torch module mapping vocabulary to hidden states.
         """
         base_model = getattr(self, self.base_model_prefix, self)
+        # ? what is returned? same as above property self.base_model(). So can just use base_model = self.base_model
         if base_model is not self:
+            # if this model has a base_model
             return base_model.get_input_embeddings()
+            # an instance of nn.Embedding layer.
         else:
+            # if this model does not have a base_model, i.e., this model is the base model itself.
             raise NotImplementedError
+        # so only a subclass intended to be used as base_model needs to override this method.
 
     def set_input_embeddings(self, value: nn.Module):
         """
@@ -1829,6 +2016,8 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
     def get_output_embeddings(self) -> nn.Module:
         """
         Returns the model's output embeddings.
+
+        Output embeddings are used to generate tokens. 
 
         Returns:
             `nn.Module`: A torch module mapping hidden states to vocabulary.
@@ -1865,6 +2054,10 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
             if output_embeddings is not None:
                 self._tie_or_clone_weights(output_embeddings, self.get_input_embeddings())
 
+        # After cloning (if cloned), do input embeddngs and output embeddings get the same gradient update?
+        # Yes, clone() tensor and original tensor receive the same computation graph update, even though they are different data! 
+        # Unless clone() and then detach() from computational graph.
+
         if getattr(self.config, "is_encoder_decoder", False) and getattr(self.config, "tie_encoder_decoder", False):
             if hasattr(self, self.base_model_prefix):
                 self = getattr(self, self.base_model_prefix)
@@ -1876,6 +2069,7 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
             # Leading to issues on subsequent calls by different tests or subsequent calls.
             self._dynamic_tied_weights_keys = tied_weights
 
+        # this for loop is newly added
         for module in self.modules():
             if hasattr(module, "_tie_weights"):
                 module._tie_weights()
@@ -1972,22 +2166,52 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
 
     def _tie_or_clone_weights(self, output_embeddings, input_embeddings):
         """Tie or clone module weights depending of whether we are using TorchScript or not"""
+        # input and output embeddings are transposed??
+        # output_embeddings.weight has shape (vocab_size, hidden_size), because output_embeddings is a nn.Linear (not a nn.Embedding) layer from hidden_size to vocab_size.
+        # input_embeddings.weight has shape (num_embeddings, embedding_dim), because input_embeddings is a nn.Embedding layer, which doesn't have bias. Here num_embeddings = vocab_size.
         if self.config.torchscript:
             output_embeddings.weight = nn.Parameter(input_embeddings.weight.clone())
+            # create new Parameter from clone. # does clone() share underlying data? No, data are copied.
+            # !!But, clone() tensor and original tensor receive the same computational graph update. Unless clone() and then detach().!!
         else:
             output_embeddings.weight = input_embeddings.weight
+            # reference the same data
 
         if getattr(output_embeddings, "bias", None) is not None:
+            # .data let you change underlying data and won't report error in backward; the responsibility is on developer.
+            # .detach() will cause error in backward. This is safer to prevent unintended changes. 
             output_embeddings.bias.data = nn.functional.pad(
                 output_embeddings.bias.data,
                 (
                     0,
                     output_embeddings.weight.shape[0] - output_embeddings.bias.shape[0],
                 ),
+                # ?
                 "constant",
                 0,
             )
+            # functional.pad(input, pad, mode='constant', value=0) Pad input tensor by the size specified by pad, on both sides of the padding dim.
+            # When using the CUDA backend, functional.pad may induce nondeterministic behaviour in its backward pass that is not easily switched off.
+            # Examples
+            # >>> t4d = torch.empty(3, 3, 4, 2)
+            # >>> p1d = (1, 1) # pad last dim by 1 on each side
+            # >>> out = F.pad(t4d, p1d, "constant", 0)  # effectively zero padding
+            # >>> print(out.data.size())
+            # torch.Size([3, 3, 4, 4])
+            # >>> p2d = (1, 1, 2, 2) # pad last dim by (1, 1) and 2nd to last by (2, 2)
+            # >>> out = F.pad(t4d, p2d, "constant", 0)
+            # >>> print(out.data.size())
+            # torch.Size([3, 3, 8, 4])
+            # >>> t4d = torch.empty(3, 3, 4, 2)
+            # >>> p3d = (0, 1, 2, 1, 3, 3) # pad by (0, 1), (2, 1), and (3, 3)
+            # >>> out = F.pad(t4d, p3d, "constant", 0)
+            # >>> print(out.data.size())
+            # torch.Size([3, 9, 7, 3])
+
+            # make the output embeddings bias tensor dimension to be new vocab size in case new tokens are added and num_embedding change.
+
         if hasattr(output_embeddings, "out_features") and hasattr(input_embeddings, "num_embeddings"):
+            # "out_features" and "num_embeddings" are just different names of vocab size here.
             output_embeddings.out_features = input_embeddings.num_embeddings
 
     def _get_no_split_modules(self, device_map: str):
@@ -2055,6 +2279,8 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
         Return:
             `torch.nn.Embedding`: Pointer to the input tokens Embeddings Module of the model.
         """
+        # Should always call this method after adding new tokens! config.vocab_size is updated. But tokenizer.vocab is not updated.
+        # base_model = getattr(self, self.base_model_prefix, self)  # get the base model if it's set, or return self. can just use self.base_model property.
         model_embeds = self._resize_token_embeddings(new_num_tokens, pad_to_multiple_of, mean_resizing)
         if new_num_tokens is None and pad_to_multiple_of is None:
             return model_embeds
@@ -2072,13 +2298,18 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
         # Update base model and current model config.
         self.config.get_text_config().vocab_size = vocab_size
         self.vocab_size = vocab_size
+        # Update config.vocab_size to reflect new vocab_size. Note that base model and current model share the same config object.
+        ## Note that tokenizer.vocab is NOT updated to include new tokens!! It's still the same vocab loaded from vocab_file during tokenizer construction.
 
+        # Tie weights (of input and output word embeddings) again if needed
         # Tie weights again if needed
         self.tie_weights()
 
         return model_embeds
 
     def _resize_token_embeddings(self, new_num_tokens, pad_to_multiple_of=None, mean_resizing=True):
+        # only resize input word embeddings in this method.
+        # since input and output embeddings are "tied" later by calling self.tie_weights(), both will be resized.
         old_embeddings = self.get_input_embeddings()
         new_embeddings = self._get_resized_embeddings(
             old_embeddings, new_num_tokens, pad_to_multiple_of, mean_resizing
@@ -2188,6 +2419,7 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
         else:
             old_num_tokens, old_embedding_dim = old_embeddings.weight.size()
 
+        # old_embeddings is an object of nn.Embedding, its weight has shape (num_embeddings, embedding_dim)
         if old_num_tokens == new_num_tokens and not is_deepspeed_zero3_enabled():
             return old_embeddings
 
@@ -2491,11 +2723,16 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
         """
         # Prune heads if needed
         if self.config.pruned_heads:
+            # a dict, the list of heads index of some layers.
             self.prune_heads(self.config.pruned_heads)
 
+        # Tie weights (of input and output word embeddings). Don't forget!
         if _init_weights:
             # Initialize weights
             self.apply(self._initialize_weights)
+            # how about arguments of self._init_weights method??
+            # !! Module method apply(fn) applies fn RECURSIVELY to every submodule (as returned by .children()) as well as self!!
+            ## so this will run self._init_weights(self), then for each submodule of self, run self._init_weights(submodule), and so on.
 
             # Tie weights should be skipped when not initializing all weights
             # since from_pretrained(...) calls tie weights anyways
@@ -2513,10 +2750,12 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
         """
         # save new sets of pruned heads as union of previously stored pruned heads and newly pruned heads
         for layer, heads in heads_to_prune.items():
+            # combine heads to prune passed in to this function, with what's specified in config object.
             union_heads = set(self.config.pruned_heads.get(layer, [])) | set(heads)
             self.config.pruned_heads[layer] = list(union_heads)  # Unfortunately we have to store it as list for JSON
 
         self.base_model._prune_heads(heads_to_prune)
+        # how to prune heads is determined by the base_model subclass.
 
     def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
         """
@@ -2731,6 +2970,8 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
             files_timestamps = self._get_files_timestamps(save_directory)
 
         # Only save the model itself if we are using distributed training
+        # model_to_save = self.module if hasattr(self, "module") else self
+        # distributed makes original model object a "module" attribute. 
         model_to_save = unwrap_model(self)
 
         # save the string version of dtype to the config, e.g. convert torch.float32 => "float32"
@@ -3167,6 +3408,8 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
                 Can be either:
 
                     - A string, the *model id* of a pretrained model hosted inside a model repo on huggingface.co.
+                      Valid model ids can be located at the root-level, like `bert-base-uncased`, or namespaced under a
+                      user or organization name, like `dbmdz/bert-base-german-cased`.
                     - A path to a *directory* containing model weights saved using
                       [`~PreTrainedModel.save_pretrained`], e.g., `./my_model_directory/`.
                     - A path or url to a *tensorflow index checkpoint file* (e.g, `./tf_model/model.ckpt.index`). In
@@ -3391,6 +3634,18 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
         Currently, it can't handle deepspeed ZeRO stage 3 and ignores loading errors
 
         """
+        # The followings are done in order:
+        #  - Create a config object by from_pretrained() if we don't pass argument 'config' in kwargs or argument 'config' is a model short name.
+        #  - Locate pretrained model weights ckpt file
+        #    -- if argument pretrained_model_name_or_path is None, then you must have provided state_dict argument which is a dict of model weights
+        #    -- if pretrained_model_name_or_path is a shortcut name, retrieve pretrained weights file from web
+        #    -- if pretrained_model_name_or_path is a file, it is the pretrained weights file
+        #    -- if pretrained_model_name_or_path is a directory, the pretrained weights file has name WEIGHTS_NAME under the directory. This was likely created by save_pretrained.
+        #  - Instantiate model using constructor. Only config object is required. Pretrained model ckpt file is not used when the model object is constructed! Weights are initialized randomly by apply _init_weights() recursively.
+        #  - If argument state_dict is not provided, loaded it from pretrained model weights ckpt file. Now state_dict object is ready, either provided in kwargs, or loaded from saved ckpt. 
+        #  - Restore model weights by state_dict object; recursively doing so for all submodules.
+
+        #config = kwargs.pop("config", None)
         state_dict = kwargs.pop("state_dict", None)
         from_tf = kwargs.pop("from_tf", False)
         from_flax = kwargs.pop("from_flax", False)
@@ -3567,6 +3822,9 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
 
         # Load config if we don't provide a configuration
         if not isinstance(config, PretrainedConfig):
+            # if config is not an object of PretrainedConfig
+            # - if it's None, then set config to be the same as model_name
+            # - if it's a short name, pass it to config class's from_pretrained() method.
             config_path = config if config is not None else pretrained_model_name_or_path
             config, model_kwargs = cls.config_class.from_pretrained(
                 config_path,
@@ -3583,6 +3841,8 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
                 _from_pipeline=from_pipeline,
                 **kwargs,
             )
+            # returned model_kwargs is passed in kwargs but has some entries related with downloading and config removed, because return_unused_kwargs=True.
+            # All model_kwargs is considered to be used to construct model.
         else:
             # In case one passes a config to `from_pretrained` + "attn_implementation"
             # override the `_attn_implementation` attribute to `attn_implementation` of the kwargs
@@ -3598,6 +3858,7 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
                 config._attn_implementation = kwarg_attn_imp
 
             model_kwargs = kwargs
+        # Now config object of type PretrainedConfig is ready to use.
 
         pre_quantized = getattr(config, "quantization_config", None) is not None
         if pre_quantized or quantization_config is not None:
@@ -4045,9 +4306,13 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
                 # that do not require accelerate.
                 state_dict = None
 
+        # Instantiate model using constructor. Only config object is required. 
+        # Pretrained model ckpt file is not used when the model object is constructed! Weights are initialized randomly by apply _init_weights() recursively.
         config.name_or_path = pretrained_model_name_or_path
 
         # Instantiate model.
+        # !! Here is where model instance is created !!
+        # model parameters are initialized, but not set to values of pretrained yet. That's done later.
         init_contexts = [no_init_weights(_enable=_fast_init)]
         tp_device = None
 
@@ -4059,6 +4324,8 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
                 deepspeed.zero.Init(config_dict_or_path=deepspeed_config()),
                 set_zero3_state(),
             ] + init_contexts
+            # this immediately partitions the model across all gpus, to avoid the overhead in time
+            # and memory copying it on CPU or each GPU first
         elif low_cpu_mem_usage:
             if not is_accelerate_available():
                 raise ImportError(
@@ -4171,6 +4438,8 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
             tied_params = find_tied_parameters(model)
             # check if we don't have tied param in different devices
             check_tied_parameters_on_same_device(tied_params, device_map)
+
+        # next step is to set (some or all) model weights to pretrained weights, either directly from state_dict object provided in kwargs, or loaded from ckpt file.
 
         if from_tf:
             if resolved_archive_file.endswith(".index"):
@@ -4422,6 +4691,9 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
         gguf_path=None,
         weights_only=True,
     ):
+        # Now object state_dict is ready, either provided in kwargs, or loaded from saved ckpt.
+        # Convert PyTorch state_dict object from old format to new format, if needed.
+
         is_safetensors = False
         is_quantized = hf_quantizer is not None
         state_dict_folder = None
@@ -4452,6 +4724,7 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
         model_state_dict = model.state_dict()
         expected_keys = list(model_state_dict.keys())
         prefix = model.base_model_prefix
+        # !! set correct base model object to base_model_prefix attribute is critical for loading checkpoint correctly.
 
         if hf_quantizer is not None:
             expected_keys = hf_quantizer.update_expected_keys(model, expected_keys, loaded_keys)
@@ -4610,9 +4883,12 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
         # Make sure we are able to load base models as well as derived models (with heads)
         start_prefix = ""
         model_to_load = model
+        # a reference to the exactly same model object? Yes, this model can be a base_model or a full model. 
         if len(cls.base_model_prefix) > 0 and not hasattr(model, cls.base_model_prefix) and has_prefix_module:
+            # if this model is base_model
             start_prefix = cls.base_model_prefix + "."
         if len(cls.base_model_prefix) > 0 and hasattr(model, cls.base_model_prefix) and not has_prefix_module:
+            # if model is full model (that has a base model) and state_dict does not have base_model prefix, load base model 
             model_to_load = getattr(model, cls.base_model_prefix)
             base_model_expected_keys = list(model_to_load.state_dict().keys())
             if any(key in expected_keys_not_prefixed and key not in base_model_expected_keys for key in loaded_keys):
@@ -4622,6 +4898,7 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
                 )
             if device_map is not None:
                 device_map = {k.replace(f"{cls.base_model_prefix}.", ""): v for k, v in device_map.items()}
+        # otherwise, this model is the one to load checkpoint into, and start with empty prefix. In other words, load heads and base model.
 
         def _find_mismatched_keys(
             state_dict,
@@ -5154,6 +5431,54 @@ if PreTrainedModel.push_to_hub.__doc__ is not None:
     )
 
 
+# moved to pytorch_utils in new version
+# class Conv1D(nn.Module):
+#     """
+#     1D-convolutional layer as defined by Radford et al. for OpenAI GPT (and also used in GPT-2).
+
+#     Basically works like a linear layer but the weights are transposed.
+
+#     Args:
+#         nf (`int`): The number of output features.
+#         nx (`int`): The number of input features.
+#     """
+
+#     def __init__(self, nf, nx):
+#         """ Conv1D layer as defined by Radford et al. for OpenAI GPT (and also used in GPT-2)
+#             Basically works like a Linear layer but the weights are transposed.
+
+#             Why transposed?
+#             class torch.nn.Linear(in_features, out_features, bias=True), weight tensor shape is [out_features, in_features]! operation is: bias + input * transpose(weight).
+
+#             In this Conv1D module, the weight tensor shape is [dim_in, dim_out]. operation is: bias + input * weight. The shape of weight is more like nn.Embedding (but nn.Embedding doesn't have bias).
+
+#             nx is size of input, nf is size of output.  Note: output dimension nf is the first argument to this constructor!!
+#         """
+#         # nx is size of input, 
+#         # nf is size of output.  
+#         # Note: output dimension nf is the first argument to this constructor!!
+#         super().__init__()
+#         self.nf = nf
+#         w = torch.empty(nx, nf)  # uninitialized random values of shape (nx, nf). faster than torch.zeros()
+#         nn.init.normal_(w, std=0.02)
+#         self.weight = nn.Parameter(w)  # create trainable parameter from tensor; shape (nx, nf)
+#         self.bias = nn.Parameter(torch.zeros(nf))
+
+#     def forward(self, x):
+#         # x is input tensor, has shape [..., nx]
+#         size_out = x.size()[:-1] + (self.nf,)
+#         x = torch.addmm(self.bias, x.view(-1, x.size(-1)), self.weight)
+#         # torch.addmm(input, mat1, mat2, *, beta=1, alpha=1, out=None) -> Tensor 
+#         # Performs a matrix multiplication of the matrices mat1 and mat2. The matrix input is added to the final result. 
+#         x = x.view(*size_out)   # shape [..., nf]
+#         # view(*shape) Returns a new tensor with the same data as the self tensor but of a different shape. The returned tensor shares the same data and must have the same number of elements, but may have a different size. 
+#         # For a tensor to be viewed, the new view size must be compatible with its original size and stride, 
+#         # i.e., each new view dimension must either be a subspace of an original dimension, or only span across original dimensions d,d+1,�,d+k that satisfy the following 
+#         # contiguity-like condition that for all i=d,...,d+k-1, stride[i] = stride[i+1] x size[i+1]. ??
+#         # Otherwise, it will not be possible to view self tensor as shape without copying it (e.g., via contiguous()). 
+#         # When it is unclear whether a view() can be performed, it is advisable to use reshape(), which returns a view if the shapes are compatible, and copies (equivalent to calling contiguous()) otherwise.
+#         return x
+
 class PoolerStartLogits(nn.Module):
     """
     Compute SQuAD start logits from sequence hidden states.
@@ -5166,6 +5491,8 @@ class PoolerStartLogits(nn.Module):
     def __init__(self, config: PretrainedConfig):
         super().__init__()
         self.dense = nn.Linear(config.hidden_size, 1)
+        # convert hidden vector of a token to a vector of size 1. nn.Linear layer has bias, but has no activation. 
+        # does not use activation because the output of self.dense() is the last tensor before softmax, i.e., logit.
 
     def forward(
         self, hidden_states: torch.FloatTensor, p_mask: Optional[torch.FloatTensor] = None
@@ -5182,12 +5509,16 @@ class PoolerStartLogits(nn.Module):
             `torch.FloatTensor`: The start logits for SQuAD.
         """
         x = self.dense(hidden_states).squeeze(-1)
+        # x shape is (batch_size, seq_len). convert the whole hidden vector of a token to a scalar.
 
         if p_mask is not None:
+            # p_mask is position mask that has value 1 for positions that are not valid to be a span start, such as padding tokens and special tokens.
             if get_parameter_dtype(self) == torch.float16:
                 x = x * (1 - p_mask) - 65500 * p_mask
             else:
                 x = x * (1 - p_mask) - 1e30 * p_mask
+            # for position where p_mask is 0, the output is not masked, and return x
+            # for position where p_mask is 1, the output is -inf.
 
         return x
 
@@ -5201,6 +5532,7 @@ class PoolerEndLogits(nn.Module):
             The config used by the model, will be used to grab the `hidden_size` of the model and the `layer_norm_eps`
             to use.
     """
+    # the logic to predict span end is more complicated than predicting span start, because it needs to take into account of start predict!
 
     def __init__(self, config: PretrainedConfig):
         super().__init__()
@@ -5241,18 +5573,25 @@ class PoolerEndLogits(nn.Module):
         assert (
             start_states is not None or start_positions is not None
         ), "One of start_states, start_positions should be not None"
+        
+        # hidden_states shape (batch_size, seq_len, hidden_size)
+        # start_positions shape (batch_size,)
+
         if start_positions is not None:
             slen, hsz = hidden_states.shape[-2:]
             start_positions = start_positions[:, None, None].expand(-1, -1, hsz)  # shape (bsz, 1, hsz)
             start_states = hidden_states.gather(-2, start_positions)  # shape (bsz, 1, hsz)
             start_states = start_states.expand(-1, slen, -1)  # shape (bsz, slen, hsz)
+            # so start_states is of shape (batch_size, seq_len, hidden_size), and the hidden vector at every position is copied from the one at start_positions
 
         x = self.dense_0(torch.cat([hidden_states, start_states], dim=-1))
         x = self.activation(x)
         x = self.LayerNorm(x)
         x = self.dense_1(x).squeeze(-1)
+        # x shape is (batch_size, seq_len).
 
         if p_mask is not None:
+            # p_mask is position mask that has value 1 for positions that are not valid to be a span end. Special tokens, or positions before span start.
             if get_parameter_dtype(self) == torch.float16:
                 x = x * (1 - p_mask) - 65500 * p_mask
             else:
@@ -5275,6 +5614,7 @@ class PoolerAnswerClass(nn.Module):
         self.dense_0 = nn.Linear(config.hidden_size * 2, config.hidden_size)
         self.activation = nn.Tanh()
         self.dense_1 = nn.Linear(config.hidden_size, 1, bias=False)
+        # why disable bias?
 
     def forward(
         self,
@@ -5304,6 +5644,8 @@ class PoolerAnswerClass(nn.Module):
         Returns:
             `torch.FloatTensor`: The SQuAD 2.0 answer class.
         """
+        # hidden_states shape (batch_size, seq_len, hidden_size)
+        
         # No dependency on end_feature so that we can obtain one single `cls_logits` for each sample.
         hsz = hidden_states.shape[-1]
         assert (
@@ -5317,13 +5659,17 @@ class PoolerAnswerClass(nn.Module):
             cls_index = cls_index[:, None, None].expand(-1, -1, hsz)  # shape (bsz, 1, hsz)
             cls_token_state = hidden_states.gather(-2, cls_index).squeeze(-2)  # shape (bsz, hsz)
         else:
+            # assuming the final token of the sequence is for classification.
             cls_token_state = hidden_states[:, -1, :]  # shape (bsz, hsz)
+        # cls_token_state is the hidden state of the classification token, shape (batch_size, hidden_size)
 
         x = self.dense_0(torch.cat([start_states, cls_token_state], dim=-1))
         x = self.activation(x)
         x = self.dense_1(x).squeeze(-1)
+        # x shape is (batch_size,).
 
         return x
+        # x shape is (batch_size,). It's the classification of each sequence.
 
 
 @dataclass
@@ -5369,6 +5715,7 @@ class SQuADHead(nn.Module):
 
     def __init__(self, config):
         super().__init__()
+        # may choose more than 1 best start token and end token.
         self.start_n_top = config.start_n_top
         self.end_n_top = config.end_n_top
 
@@ -5410,6 +5757,8 @@ class SQuADHead(nn.Module):
         start_logits = self.start_logits(hidden_states, p_mask=p_mask)
 
         if start_positions is not None and end_positions is not None:
+            # This is during training.
+            # start_positions and end_positions are ground truth labels.
             # If we are on multi-GPU, let's remove the dimension added by batch splitting
             for x in (start_positions, end_positions, cls_index, is_impossible):
                 if x is not None and x.dim() > 1:
@@ -5424,6 +5773,7 @@ class SQuADHead(nn.Module):
             total_loss = (start_loss + end_loss) / 2
 
             if cls_index is not None and is_impossible is not None:
+                # is_impossible is ground truth label
                 # Predict answerability from the representation of CLS and START
                 cls_logits = self.answer_class(hidden_states, start_positions=start_positions, cls_index=cls_index)
                 loss_fct_cls = nn.BCEWithLogitsLoss()
@@ -5431,10 +5781,12 @@ class SQuADHead(nn.Module):
 
                 # note(zhiliny): by default multiply the loss by 0.5 so that the scale is comparable to start_loss and end_loss
                 total_loss += cls_loss * 0.5
+            # total_loss is the sum of all three losses: predicting start_pos, end_pos, and classification loss
 
             return SquadHeadOutput(loss=total_loss) if return_dict else (total_loss,)
 
         else:
+            # This is for inference.
             # during inference, compute the end logits based on beam search
             bsz, slen, hsz = hidden_states.size()
             start_log_probs = nn.functional.softmax(start_logits, dim=-1)  # shape (bsz, slen)
@@ -5472,6 +5824,9 @@ class SQuADHead(nn.Module):
                     end_top_index=end_top_index,
                     cls_logits=cls_logits,
                 )
+
+        # return start_top_log_probs, start_top_index, end_top_log_probs, end_top_index, cls_logits
+        # or (if labels are provided) (total_loss,)
 
 
 class SequenceSummary(nn.Module):
@@ -5546,11 +5901,14 @@ class SequenceSummary(nn.Module):
         """
         if self.summary_type == "last":
             output = hidden_states[:, -1]
+            # when indexing and slicing tensors, trailing dimensions can be omitted and it means take all from those dimensions.
         elif self.summary_type == "first":
             output = hidden_states[:, 0]
         elif self.summary_type == "mean":
             output = hidden_states.mean(dim=1)
         elif self.summary_type == "cls_index":
+            # hidden_states.shape same as hidden_states.size()? 
+            # hidden_states.shape[-2] is the length of second-to-last dimension of hidden_states, which is sequence_len dimension.
             if cls_index is None:
                 cls_index = torch.full_like(
                     hidden_states[..., :1, :],
@@ -5559,6 +5917,7 @@ class SequenceSummary(nn.Module):
                 )
             else:
                 cls_index = cls_index.unsqueeze(-1).unsqueeze(-1)
+                # shape (batch_size, 1, 1)
                 cls_index = cls_index.expand((-1,) * (cls_index.dim() - 1) + (hidden_states.size(-1),))
             # shape of cls_index: (bsz, XX, 1, hidden_size) where XX are optional leading dim of hidden_states
             output = hidden_states.gather(-2, cls_index).squeeze(-2)  # shape (bsz, XX, hidden_size)
@@ -5571,6 +5930,7 @@ class SequenceSummary(nn.Module):
         output = self.last_dropout(output)
 
         return output
+        # output shape (batch_size, hidden_size), a hidden vector for every sequence to represent that sequence.
 
 
 def unwrap_model(model: nn.Module, recursive: bool = False) -> nn.Module:
@@ -5631,6 +5991,100 @@ def get_disk_only_shard_files(device_map, sharded_metadata, start_prefix):
         files_content[filename].append(device_map[weight_name])
 
     return [fname for fname, devices in files_content.items() if set(devices) == {"disk"}]
+
+
+# moved to pytorch_utils in new version
+# def apply_chunking_to_forward(
+#     forward_fn: Callable[..., torch.Tensor], chunk_size: int, chunk_dim: int, *input_tensors
+# ) -> torch.Tensor:
+#     """
+#     This function chunks the `input_tensors` into smaller input tensor parts of size `chunk_size` over the
+#     dimension `chunk_dim`. It then applies a layer `forward_fn` to each chunk independently to save memory.
+
+#     If the `forward_fn` is independent across the `chunk_dim` this function will yield the same result as
+#     directly applying `forward_fn` to `input_tensors`.
+
+#     Args:
+#         forward_fn (`Callable[..., torch.Tensor]`):
+#             The forward function of the model.
+#         chunk_size (`int`):
+#             The chunk size of a chunked tensor: `num_chunks = len(input_tensors[chunk_dim]) / chunk_size`.
+#         chunk_dim (`int`):
+#             The dimension over which the `input_tensors` should be chunked.
+#         input_tensors (`Tuple[torch.Tensor]`):
+#             The input tensors of ``forward_fn`` which will be chunked.
+#     Returns:
+#         `torch.Tensor`: A tensor with the same shape as the `foward_fn` would have given if applied`.
+
+
+#     Examples::
+
+#         # rename the usual forward() fn to forward_chunk()
+#         def forward_chunk(self, hidden_states):
+#             hidden_states = self.decoder(hidden_states)
+#             return hidden_states
+
+#         # implement a chunked forward function
+#         def forward(self, hidden_states):
+#             return apply_chunking_to_forward(self.forward_chunk, self.chunk_size_lm_head, self.seq_len_dim, hidden_states)
+#     """
+#     # input_tensors need to be a tuple/list of tensors? Can't be a single tensor?
+
+#     assert len(input_tensors) > 0, f"{input_tensors} has to be a tuple/list of tensors"
+#     # ?? This assert would fail, because len() can be used on a single tensor, and return the size of dimension 0.
+
+#     # inspect.signature exist since python 3.5 and is a python method -> no problem with backward compatibility
+#     num_args_in_forward_chunk_fn = len(inspect.signature(forward_fn).parameters)
+#     if num_args_in_forward_chunk_fn != len(input_tensors):
+#         raise ValueError(
+#             f"forward_chunk_fn expects {num_args_in_forward_chunk_fn} arguments, but only {len(input_tensors)} input "
+#             "tensors are given"
+#         )
+
+#     if chunk_size > 0:
+#         tensor_shape = input_tensors[0].shape[chunk_dim]
+#         for input_tensor in input_tensors:
+#             if input_tensor.shape[chunk_dim] != tensor_shape:
+#                 raise ValueError(
+#                     f"All input tenors have to be of the same shape: {tensor_shape}, "
+#                     f"found shape {input_tensor.shape[chunk_dim]}"
+#                 )
+
+#         if input_tensors[0].shape[chunk_dim] % chunk_size != 0:
+#             raise ValueError(
+#                 f"The dimension to be chunked {input_tensors[0].shape[chunk_dim]} has to be a multiple of the chunk "
+#                 f"size {chunk_size}"
+#             )
+
+#         num_chunks = input_tensors[0].shape[chunk_dim] // chunk_size
+
+#         # chunk input tensor into tuples
+#         input_tensors_chunks = tuple(input_tensor.chunk(num_chunks, dim=chunk_dim) for input_tensor in input_tensors)
+#         # apply forward fn to every tuple
+#         output_chunks = tuple(forward_fn(*input_tensors_chunk) for input_tensors_chunk in zip(*input_tensors_chunks))
+#         # concatenate output at same dimension
+#         return torch.cat(output_chunks, dim=chunk_dim)
+
+#     return forward_fn(*input_tensors)
+
+
+# removed from new version
+def create_position_ids_from_input_ids(input_ids, padding_idx):
+    """ Replace non-padding symbols of input sequence with their position numbers. Position numbers begin at
+    padding_idx + 1. Padding symbols are ignored in position id accumulation. This is modified from fairseq's
+    `utils.make_positions`.
+
+    :param torch.Tensor x:
+    :return torch.Tensor:
+    """
+    # The series of casts and type-conversions here are carefully balanced to both work with ONNX export and XLA.
+    mask = input_ids.ne(padding_idx).int()   # .int() is equivalent to self.to(torch.int32). Performs Tensor dtype and/or device conversion. 
+    incremental_indices = torch.cumsum(mask, dim=1).type_as(mask) * mask   
+    # .type_as() equivalent to self.type(tensor.type()). .type(dtype=None) returns the type if dtype is not provided, else casts this object to the specified type.
+    return incremental_indices.long() + padding_idx   
+    # Why is it ok for Position numbers to begin at padding_idx + 1? So position_ids won't have chance to be equal to padding_idx
+
+
 
 
 ALL_ATTENTION_FUNCTIONS: Dict[str, Dict[str, Callable]] = {}

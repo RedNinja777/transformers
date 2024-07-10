@@ -628,8 +628,10 @@ class ElectraDiscriminatorPredictions(nn.Module):
     def __init__(self, config):
         super().__init__()
 
+        # Linear layer and then nonlinear activation before sending to last classification layer
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
         self.activation = get_activation(config.hidden_act)
+        # 1 category, not 2?
         self.dense_prediction = nn.Linear(config.hidden_size, 1)
         self.config = config
 
@@ -649,12 +651,14 @@ class ElectraGeneratorPredictions(nn.Module):
 
         self.activation = get_activation("gelu")
         self.LayerNorm = nn.LayerNorm(config.embedding_size, eps=config.layer_norm_eps)
+        # convert hidden vector size back to embedding_size
         self.dense = nn.Linear(config.hidden_size, config.embedding_size)
 
     def forward(self, generator_hidden_states):
         hidden_states = self.dense(generator_hidden_states)
         hidden_states = self.activation(hidden_states)
         hidden_states = self.LayerNorm(hidden_states)
+        # nonlinear activation before sending to the last layer.
 
         return hidden_states
 
@@ -808,6 +812,7 @@ class ElectraModel(ElectraPreTrainedModel):
 
         if config.embedding_size != config.hidden_size:
             self.embeddings_project = nn.Linear(config.embedding_size, config.hidden_size)
+            # change the output of Embedding layer from  embedding_size to hidden_size. 
 
         self.encoder = ElectraEncoder(config)
         self.config = config
@@ -873,6 +878,7 @@ class ElectraModel(ElectraPreTrainedModel):
         past_key_values_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
 
         if attention_mask is None:
+            # padding mask
             attention_mask = torch.ones(input_shape, device=device)
         if token_type_ids is None:
             if hasattr(self.embeddings, "token_type_ids"):
@@ -1130,9 +1136,13 @@ class ElectraForPreTraining(ElectraPreTrainedModel):
         if labels is not None:
             loss_fct = nn.BCEWithLogitsLoss()
             if attention_mask is not None:
+                # only padding tokens are excluded from loss function.
+                # All other tokens are included, with label "original" or "generated"
                 active_loss = attention_mask.view(-1, discriminator_sequence_output.shape[1]) == 1
                 active_logits = logits.view(-1, discriminator_sequence_output.shape[1])[active_loss]
                 active_labels = labels[active_loss]
+                # index slicing by boolean tensor results in 1-D vector.
+                # if sliced by int tensor, it's different: first dimensions will try to match, and last dimension is the index on the last dimension.
                 loss = loss_fct(active_logits, active_labels.float())
             else:
                 loss = loss_fct(logits.view(-1, discriminator_sequence_output.shape[1]), labels.float())
@@ -1171,6 +1181,7 @@ class ElectraForMaskedLM(ElectraPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
+    # need to override this function to be able to tie input and output embedding weights
     def get_output_embeddings(self):
         return self.generator_lm_head
 
@@ -1227,6 +1238,7 @@ class ElectraForMaskedLM(ElectraPreTrainedModel):
         # Masked language modeling softmax layer
         if labels is not None:
             loss_fct = nn.CrossEntropyLoss()  # -100 index = padding token
+            # this is MLM pretraining, only 15% of tokens are labeled and participate in loss function.
             loss = loss_fct(prediction_scores.view(-1, self.config.vocab_size), labels.view(-1))
 
         if not return_dict:

@@ -27,6 +27,17 @@ from ...utils import TensorType, is_torch_available, logging
 
 logger = logging.get_logger(__name__)
 
+BART_PRETRAINED_CONFIG_ARCHIVE_MAP = {
+    "facebook/bart-base": "https://huggingface.co/facebook/bart-base/resolve/main/config.json",
+    "facebook/bart-large": "https://huggingface.co/facebook/bart-large/resolve/main/config.json",
+    "facebook/bart-large-mnli": "https://huggingface.co/facebook/bart-large-mnli/resolve/main/config.json",
+    "facebook/bart-large-cnn": "https://huggingface.co/facebook/bart-large-cnn/resolve/main/config.json",
+    "facebook/bart-large-xsum": "https://huggingface.co/facebook/bart-large-xsum/resolve/main/config.json",
+    "facebook/mbart-large-en-ro": "https://huggingface.co/facebook/mbart-large-en-ro/resolve/main/config.json",
+    "yjernite/bart_eli5": "https://huggingface.co/yjernite/bart_eli5/resolve/main/config.json",
+    # See all BART models at https://huggingface.co/models?filter=bart
+}
+
 
 class BartConfig(PretrainedConfig):
     r"""
@@ -113,12 +124,15 @@ class BartConfig(PretrainedConfig):
         vocab_size=50265,
         max_position_embeddings=1024,
         encoder_layers=12,
+        # typically 4X of hidden_size/d_model
         encoder_ffn_dim=4096,
         encoder_attention_heads=16,
         decoder_layers=12,
         decoder_ffn_dim=4096,
         decoder_attention_heads=16,
+        # used in BartEncoder as the probability of skip any BartEncoder layer
         encoder_layerdrop=0.0,
+        # used in BartDecoder as the probability of skip any BartDecoder layer
         decoder_layerdrop=0.0,
         activation_function="gelu",
         d_model=1024,
@@ -133,13 +147,16 @@ class BartConfig(PretrainedConfig):
         pad_token_id=1,
         bos_token_id=0,
         eos_token_id=2,
+        # BART model is encoder_decoder architecture
         is_encoder_decoder=True,
+        # 2 is token id of eos
         decoder_start_token_id=2,
         forced_eos_token_id=2,
         **kwargs,
     ):
         self.vocab_size = vocab_size
         self.max_position_embeddings = max_position_embeddings
+        # encoder_embed_dim and decoder_embed_dim
         self.d_model = d_model
         self.encoder_ffn_dim = encoder_ffn_dim
         self.encoder_layers = encoder_layers
@@ -147,14 +164,23 @@ class BartConfig(PretrainedConfig):
         self.decoder_ffn_dim = decoder_ffn_dim
         self.decoder_layers = decoder_layers
         self.decoder_attention_heads = decoder_attention_heads
+        # applied after other types of neural layers.
         self.dropout = dropout
+        # used inside SelfAttention module, applied after softmax of QK similarity vector. default 0?
         self.attention_dropout = attention_dropout
+        # applied after nonlinear activation which is after hidden vector maps from d_model to encoder_ffn_dim.
         self.activation_dropout = activation_dropout
         self.activation_function = activation_function
+        # Normal(0, this parameter)
         self.init_std = init_std
         self.encoder_layerdrop = encoder_layerdrop
         self.decoder_layerdrop = decoder_layerdrop
         self.classifier_dropout = classifier_dropout
+
+        # bart has a hack that offsets positional embeddings by 2, other models don't do this
+        # why? 
+        # This is to shift the starting position id from 0 to this value, so no position id of actual tokens will be the same as pad_token_id.
+
         self.use_cache = use_cache
         self.num_hidden_layers = encoder_layers
         self.scale_embedding = scale_embedding  # scale factor will be sqrt(d_model) if True
@@ -400,6 +426,70 @@ class BartOnnxConfig(OnnxSeq2SeqConfigWithPast):
             flattened_output = super(OnnxSeq2SeqConfigWithPast, self)._flatten_past_key_values_(
                 flattened_output, name, idx, t
             )
+
+
+
+# BART configuration
+
+# an example config https://s3.amazonaws.com/models.huggingface.co/bert/facebook/bart-large/config.json
+# {
+#   "_num_labels": 3,
+#   "activation_dropout": 0.0,
+#   "activation_function": "gelu",
+#   "add_final_layer_norm": false,
+#   "architectures": [
+#     "BartModel",
+#     "BartForMaskedLM",
+#     "BartForSequenceClassification"
+#   ],
+#   "attention_dropout": 0.0,
+#   "bos_token_id": 0,
+#   "classif_dropout": 0.0,
+#   "d_model": 1024,
+#   "decoder_attention_heads": 16,
+#   "decoder_ffn_dim": 4096,
+#   "decoder_layerdrop": 0.0,
+#   "decoder_layers": 12,
+#   "decoder_start_token_id": 2,  # not the same as bos_token_id which is 0; but the same as eos_token_id and sep_token_id. 
+#   "dropout": 0.1,
+#   "encoder_attention_heads": 16,
+#   "encoder_ffn_dim": 4096,
+#   "encoder_layerdrop": 0.0,
+#   "encoder_layers": 12,
+#   "eos_token_id": 2,
+#   "id2label": {
+#     "0": "LABEL_0",
+#     "1": "LABEL_1",
+#     "2": "LABEL_2"
+#   },
+#   "init_std": 0.02,
+#   "is_encoder_decoder": true,
+#   "label2id": {
+#     "LABEL_0": 0,
+#     "LABEL_1": 1,
+#     "LABEL_2": 2
+#   },
+#   "max_position_embeddings": 1024,
+#   "model_type": "bart",
+#   "normalize_before": false,
+#   "num_hidden_layers": 12,
+#   "output_past": false,
+#   "pad_token_id": 1,
+#   "prefix": " ",
+#   "scale_embedding": false,
+#   "task_specific_params": {
+#     "summarization": {
+#       "early_stopping": true,
+#       "length_penalty": 2.0,
+#       "max_length": 142,
+#       "min_length": 56,
+#       "no_repeat_ngram_size": 3,
+#       "num_beams": 4
+#     }
+#   },
+#   "vocab_size": 50265
+# }
+
 
 
 __all__ = ["BartConfig", "BartOnnxConfig"]

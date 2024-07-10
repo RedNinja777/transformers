@@ -57,6 +57,8 @@ def positional_encoding(position, d_model_size, dtype):
 
 def scaled_dot_product_attention(q, k, v, mask, attention_mask=None, head_mask=None):
     # calculate attention
+    # mask is causual mask, 1 for invisible token positions, 0 for visible token positions.
+    # attention_mask is simply padding mask, 0 for actual tokens, and -inf for padding tokens.
     matmul_qk = torch.matmul(q, k.permute(0, 1, 3, 2))
 
     dk = k.shape[-1]
@@ -129,6 +131,8 @@ class MultiHeadAttention(nn.Module):
         use_cache=False,
         output_attentions=False,
     ):
+        # mask is causual mask, 1 for invisible token positions, 0 for visible token positions.
+        # attention_mask is simply padding mask, 0 for actual tokens, and -inf for padding tokens.
         batch_size = q.shape[0]
 
         q = self.Wq(q)
@@ -138,7 +142,9 @@ class MultiHeadAttention(nn.Module):
         q = self.split_into_heads(q, batch_size)
         k = self.split_into_heads(k, batch_size)
         v = self.split_into_heads(v, batch_size)
+
         if layer_past is not None:
+            # this is just GPT2: concatenating past key and value sequences to current input
             past_key, past_value = layer_past[0], layer_past[1]
             k = torch.cat((past_key, k), dim=-2)
             v = torch.cat((past_value, v), dim=-2)
@@ -147,6 +153,7 @@ class MultiHeadAttention(nn.Module):
             present = torch.stack((k, v))
         else:
             present = (None,)
+        # this present will be passed to the next call of forward as past.
 
         output = scaled_dot_product_attention(q, k, v, mask, attention_mask, head_mask)
         scaled_attention = output[0].permute([0, 2, 1, 3])
@@ -166,6 +173,8 @@ def point_wise_feed_forward_network(d_model_size, dff):
 
 class EncoderLayer(nn.Module):
     def __init__(self, d_model_size, num_heads, dff, rate=0.1):
+        # dff is intermediate (increased) hidden size
+        # rate is dropout rate
         super().__init__()
 
         self.multi_head_attention = MultiHeadAttention(d_model_size, num_heads)
@@ -180,6 +189,8 @@ class EncoderLayer(nn.Module):
     def forward(
         self, x, mask, layer_past=None, attention_mask=None, head_mask=None, use_cache=False, output_attentions=False
     ):
+        # mask is causual mask, 1 for invisible token positions, 0 for visible token positions.
+        # attention_mask is simply padding mask, 0 for actual tokens, and -inf for padding tokens.
         normed = self.layernorm1(x)
         attn_outputs = self.multi_head_attention(
             normed,
@@ -313,6 +324,7 @@ CTRL_INPUTS_DOCSTRING = r"""
     CTRL_START_DOCSTRING,
 )
 class CTRLModel(CTRLPreTrainedModel):
+    # this is the CTRL base model
     def __init__(self, config):
         super().__init__(config)
 
@@ -390,6 +402,18 @@ class CTRLModel(CTRLPreTrainedModel):
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
+        # If using past key value states, only the last tokens
+        # should be given as an input
+        # During training a decoder, past is only useful to be used as encoder output, and encoder has no past in training.
+        # During inference, past is initialized to be encoder output, and grows step by step to include newly generated tokens.
+        # if past is not None:
+        #    if input_ids is not None:
+        #        input_ids = input_ids[:, -1:]
+        #    if inputs_embeds is not None:
+        #        inputs_embeds = inputs_embeds[:, -1:]
+        #    if token_type_ids is not None:
+        #        token_type_ids = token_type_ids[:, -1:]
+
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
         elif input_ids is not None:
@@ -410,6 +434,7 @@ class CTRLModel(CTRLPreTrainedModel):
             past_key_values = tuple([None] * len(self.h))
         else:
             past_length = past_key_values[0][0].size(-2)
+
         if position_ids is None:
             position_ids = torch.arange(past_length, input_shape[-1] + past_length, dtype=torch.long, device=device)
             position_ids = position_ids.unsqueeze(0)
@@ -433,6 +458,7 @@ class CTRLModel(CTRLPreTrainedModel):
             # effectively the same as removing these entirely.
             attention_mask = attention_mask.to(dtype=self.dtype)  # fp16 compatibility
             attention_mask = (1.0 - attention_mask) * torch.finfo(self.dtype).min
+        # attention_mask is simply padding mask, 0 for actual tokens, and -inf for padding tokens.
 
         # Prepare head mask if needed
         head_mask = self.get_head_mask(head_mask, self.config.n_layer)
@@ -447,8 +473,12 @@ class CTRLModel(CTRLPreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds = self.w(input_ids)
         # inputs_embeds = embedded.unsqueeze(0) if len(input_ids.shape)<2 else embedded
+
         seq_len = input_shape[-1]
         mask = torch.triu(torch.ones(seq_len + past_length, seq_len + past_length), 1).to(device)
+        # mask is causual mask, 1 for invisible token positions, 0 for visible token positions.
+        # torch.triu(input, diagonal=0, out=None) ? Tensor Returns the upper triangular part of a matrix (2-D tensor) or batch of matrices input, the other elements of the result tensor out are set to 0.
+        # The upper triangular part of the matrix is defined as the elements on and above the argument diagonal, where main diagonal correspond to number 0.
 
         inputs_embeds *= np.sqrt(self.d_model_size)
 
@@ -520,6 +550,24 @@ class CTRLLMHeadModel(CTRLPreTrainedModel, GenerationMixin):
 
     def set_output_embeddings(self, new_embeddings):
         self.lm_head = new_embeddings
+
+    # This method is removed in new version
+    def prepare_inputs_for_generation(self, input_ids, past_key_values=None, use_cache=None, **kwargs):
+        # only last tokens for inputs_ids if past is defined in kwargs
+        # called in base class PreTrainedModel generate() method.
+        if past_key_values is not None:
+            past_length = past_key_values[0][0].shape[2]
+
+            # Some generation methods already pass only the last input ID
+            if input_ids.shape[1] > past_length:
+                remove_prefix_length = past_length
+            else:
+                # Default to old behavior: keep only final ID
+                remove_prefix_length = input_ids.shape[1] - 1
+
+            input_ids = input_ids[:, remove_prefix_length:]
+
+        return {"input_ids": input_ids, "past_key_values": past_key_values, "use_cache": use_cache}
 
     @add_start_docstrings_to_model_forward(CTRL_INPUTS_DOCSTRING)
     @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
@@ -594,6 +642,7 @@ class CTRLLMHeadModel(CTRLPreTrainedModel, GenerationMixin):
         loss = None
         if labels is not None:
             # Shift so that tokens < n predict n
+            # similar to GPT; typical for LM.
             shift_logits = lm_logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens

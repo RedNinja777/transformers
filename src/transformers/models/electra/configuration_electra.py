@@ -25,6 +25,21 @@ from ...utils import logging
 
 logger = logging.get_logger(__name__)
 
+ELECTRA_PRETRAINED_CONFIG_ARCHIVE_MAP = {
+    "google/electra-small-generator": "https://huggingface.co/google/electra-small-generator/resolve/main/config.json",
+    "google/electra-base-generator": "https://huggingface.co/google/electra-base-generator/resolve/main/config.json",
+    "google/electra-large-generator": "https://huggingface.co/google/electra-large-generator/resolve/main/config.json",
+    "google/electra-small-discriminator": (
+        "https://huggingface.co/google/electra-small-discriminator/resolve/main/config.json"
+    ),
+    "google/electra-base-discriminator": (
+        "https://huggingface.co/google/electra-base-discriminator/resolve/main/config.json"
+    ),
+    "google/electra-large-discriminator": (
+        "https://huggingface.co/google/electra-large-discriminator/resolve/main/config.json"
+    ),
+}
+
 
 class ElectraConfig(PretrainedConfig):
     r"""
@@ -122,6 +137,7 @@ class ElectraConfig(PretrainedConfig):
         self,
         vocab_size=30522,
         embedding_size=128,
+        # much smaller than 768
         hidden_size=256,
         num_hidden_layers=12,
         num_attention_heads=4,
@@ -130,6 +146,7 @@ class ElectraConfig(PretrainedConfig):
         hidden_dropout_prob=0.1,
         attention_probs_dropout_prob=0.1,
         max_position_embeddings=512,
+        # can be pretrained more than 2?
         type_vocab_size=2,
         initializer_range=0.02,
         layer_norm_eps=1e-12,
@@ -137,6 +154,7 @@ class ElectraConfig(PretrainedConfig):
         summary_use_proj=True,
         summary_activation="gelu",
         summary_last_dropout=0.1,
+        # 0 for BERT, 1 for RoBERTa,
         pad_token_id=0,
         position_embedding_type="absolute",
         use_cache=True,
@@ -182,6 +200,31 @@ class ElectraOnnxConfig(OnnxConfig):
                 ("token_type_ids", dynamic_axis),
             ]
         )
+
+
+
+
+# An example config https://s3.amazonaws.com/models.huggingface.co/bert/google/electra-base-generator/config.json
+# {
+#   "architectures": [
+#     "ElectraForMaskedLM"
+#   ],
+#   "attention_probs_dropout_prob": 0.1,
+#   "embedding_size": 768,
+#   "hidden_act": "gelu",
+#   "hidden_dropout_prob": 0.1,
+#   "hidden_size": 256,
+#   "initializer_range": 0.02,
+#   "intermediate_size": 1024,
+#   "layer_norm_eps": 1e-12,
+#   "max_position_embeddings": 512,
+#   "model_type": "electra",
+#   "num_attention_heads": 4,
+#   "num_hidden_layers": 12,
+#   "pad_token_id": 0,
+#   "type_vocab_size": 2,
+#   "vocab_size": 30522
+# }
 
 
 __all__ = ["ElectraConfig", "ElectraOnnxConfig"]

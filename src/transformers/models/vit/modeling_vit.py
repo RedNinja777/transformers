@@ -57,6 +57,25 @@ _IMAGE_CLASS_CHECKPOINT = "google/vit-base-patch16-224"
 _IMAGE_CLASS_EXPECTED_OUTPUT = "Egyptian cat"
 
 
+VIT_PRETRAINED_MODEL_ARCHIVE_LIST = [
+    "google/vit-base-patch16-224",
+    # See all ViT models at https://huggingface.co/models?filter=vit
+]
+
+
+# Inspired by
+# https://github.com/rwightman/pytorch-image-models/blob/b9bd960a032c75ca6b808ddeed76bee5f3ed4972/timm/models/layers/helpers.py
+# From PyTorch internals
+def to_2tuple(x):
+    if isinstance(x, collections.abc.Iterable):
+        return x
+    return (x, x)
+
+
+# Based on timm implementation, which can be found here:
+# https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
+
+
 class ViTEmbeddings(nn.Module):
     """
     Construct the CLS token, position and patch embeddings. Optionally, also the mask token.
@@ -66,10 +85,17 @@ class ViTEmbeddings(nn.Module):
         super().__init__()
 
         self.cls_token = nn.Parameter(torch.randn(1, 1, config.hidden_size))
+        # Deit also has a distillation token after CLS token:
+        # self.distillation_token = nn.Parameter(torch.zeros(1, 1, config.hidden_size))
         self.mask_token = nn.Parameter(torch.zeros(1, 1, config.hidden_size)) if use_mask_token else None
         self.patch_embeddings = ViTPatchEmbeddings(config)
         num_patches = self.patch_embeddings.num_patches
+        # The +1 of position length is for extra [CLS] token. DeiT uses +2 because of additional distillation token
         self.position_embeddings = nn.Parameter(torch.randn(1, num_patches + 1, config.hidden_size))
+        # why not use nn.Embedding() instead?
+        # pretrained position embeddings is not long enough for larger image? 
+        # If patch_size is also large, it's ok. Actually no; ConvNet kernel_size needs to be fixed.
+        # But if we want to divide an image into more patches, it's a problem. 
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.patch_size = config.patch_size
         self.config = config
@@ -84,6 +110,7 @@ class ViTEmbeddings(nn.Module):
         - https://github.com/facebookresearch/dinov2/blob/e1277af2ba9496fbadf7aec6eba56e8d882d1e35/dinov2/models/vision_transformer.py#L179-L211
         """
 
+        # for the case when we need longer sequence length than pretrained position embeddings.
         num_patches = embeddings.shape[1] - 1
         num_positions = self.position_embeddings.shape[1] - 1
 
@@ -129,10 +156,12 @@ class ViTEmbeddings(nn.Module):
             # replace the masked visual tokens by mask_tokens
             mask = bool_masked_pos.unsqueeze(-1).type_as(mask_tokens)
             embeddings = embeddings * (1.0 - mask) + mask_tokens * mask
+        # tensor embeddings shape [batch_size, num_patches, embed_dim]
 
         # add the [CLS] token to the embedded patch tokens
         cls_tokens = self.cls_token.expand(batch_size, -1, -1)
         embeddings = torch.cat((cls_tokens, embeddings), dim=1)
+        # for DeiT: embeddings = torch.cat((cls_tokens, distillation_tokens, embeddings), dim=1)
 
         # add positional encoding to each token
         if interpolate_pos_encoding:
@@ -153,6 +182,8 @@ class ViTPatchEmbeddings(nn.Module):
     """
 
     def __init__(self, config):
+        # image size 224 X 224, is decomposed into a batch of N patches of a fixed patch size of 16 � 16 pixels (so sequence length is N = 14 � 14 = 196).
+        # Each patch are then passed through a linear layer to form a set of embeddings.
         super().__init__()
         image_size, patch_size = config.image_size, config.patch_size
         num_channels, hidden_size = config.num_channels, config.hidden_size
@@ -166,8 +197,12 @@ class ViTPatchEmbeddings(nn.Module):
         self.num_patches = num_patches
 
         self.projection = nn.Conv2d(num_channels, hidden_size, kernel_size=patch_size, stride=patch_size)
+        # when no padding and kernel_size = stride, the receptive fields of ConvNet have no overlap. 
+        # input tensor shape [batch_size, color_channels, image_height, image_width]
+        # output tensor shape [batch_size, output_channels (embed_dim), image_size[0] // patch_size[0], image_size[1] // patch_size[1]]
 
     def forward(self, pixel_values: torch.Tensor, interpolate_pos_encoding: bool = False) -> torch.Tensor:
+        # pixel_values is a batch of image tensor data
         batch_size, num_channels, height, width = pixel_values.shape
         if num_channels != self.num_channels:
             raise ValueError(
@@ -180,8 +215,12 @@ class ViTPatchEmbeddings(nn.Module):
                     f"Input image size ({height}*{width}) doesn't match model"
                     f" ({self.image_size[0]}*{self.image_size[1]})."
                 )
+        # torch.flatten(input, start_dim=0, end_dim=-1) Flattens input by reshaping it into a one-dimensional tensor. 
+        # If start_dim or end_dim are passed, only dimensions starting with start_dim and ending with end_dim are flattened. The order of elements in input is unchanged.
         embeddings = self.projection(pixel_values).flatten(2).transpose(1, 2)
+        # flatten(2) reshape to [batch_size, embed_dim, num_patches (same as sequence length)]
         return embeddings
+        # tensor embeddings shape [batch_size, num_patches, embed_dim]
 
 
 class ViTSelfAttention(nn.Module):
@@ -205,7 +244,10 @@ class ViTSelfAttention(nn.Module):
 
     def transpose_for_scores(self, x: torch.Tensor) -> torch.Tensor:
         new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
+        # first split hidden vector into multiple heads, from [batch_size, seq_len, hidden_size] to [batch_size, seq_len, num_heads, head_size]
         x = x.view(new_x_shape)
+        # reshape from [batch_size, seq_len, num_heads, head_size] to [batch_size, num_heads, seq_len, head_size]
+        # to handle each head independently
         return x.permute(0, 2, 1, 3)
 
     def forward(
@@ -213,11 +255,14 @@ class ViTSelfAttention(nn.Module):
     ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor]]:
         mixed_query_layer = self.query(hidden_states)
 
+        # reshape from [batch_size, seq_len, num_heads, head_size] to [batch_size, num_heads, seq_len, head_size]
         key_layer = self.transpose_for_scores(self.key(hidden_states))
         value_layer = self.transpose_for_scores(self.value(hidden_states))
         query_layer = self.transpose_for_scores(mixed_query_layer)
 
         # Take the dot product between "query" and "key" to get the raw attention scores.
+        # result of matrix multiplication shape [batch_size, num_heads, seq_len, seq_len]
+        # for every token in query, the inner product of it with every token in key which means the similarity of this query token to all key tokens
         attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
 
         attention_scores = attention_scores / math.sqrt(self.attention_head_size)
@@ -233,10 +278,14 @@ class ViTSelfAttention(nn.Module):
         if head_mask is not None:
             attention_probs = attention_probs * head_mask
 
+        # result of matrix multiplication shape [batch_size, num_heads, seq_len, head_size]
+        # for every token in query, the similarity weighted head vector of value
         context_layer = torch.matmul(attention_probs, value_layer)
 
+        # reshape from [batch_size, num_heads, seq_len, head_size] to [batch_size, seq_len, num_heads, head_size]
         context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
         new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
+        # merge heads to [batch_size, seq_len, hidden_size]
         context_layer = context_layer.view(new_context_layer_shape)
 
         outputs = (context_layer, attention_probs) if output_attentions else (context_layer,)
@@ -303,6 +352,7 @@ class ViTSelfOutput(nn.Module):
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(self, hidden_states: torch.Tensor, input_tensor: torch.Tensor) -> torch.Tensor:
+        # input_tensor is dummy here, not used
         hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(hidden_states)
 
@@ -380,6 +430,8 @@ class ViTOutput(nn.Module):
         hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(hidden_states)
 
+        # residual connection 
+        # input_tensor is input to ViTIntermediate
         hidden_states = hidden_states + input_tensor
 
         return hidden_states
@@ -396,6 +448,7 @@ class ViTLayer(nn.Module):
 
     def __init__(self, config: ViTConfig) -> None:
         super().__init__()
+        # ViTConfig does not have chunk_size_feed_forward?
         self.chunk_size_feed_forward = config.chunk_size_feed_forward
         self.seq_len_dim = 1
         self.attention = VIT_ATTENTION_CLASSES[config._attn_implementation](config)
@@ -419,13 +472,17 @@ class ViTLayer(nn.Module):
         outputs = self_attention_outputs[1:]  # add self attentions if we output attention weights
 
         # first residual connection
+        # from input to the attention layer to the output of self attention (before intermediate layer)
         hidden_states = attention_output + hidden_states
 
         # in ViT, layernorm is also applied after self-attention
         layer_output = self.layernorm_after(hidden_states)
+        # should this be named hidden_states, for residual connection purpose?
+
         layer_output = self.intermediate(layer_output)
 
         # second residual connection is done here
+        # inside ViTOutput, from output of attention to output of FF network (after hidden vector dimension reduces to hidden_size)
         layer_output = self.output(layer_output, hidden_states)
 
         outputs = (layer_output,) + outputs
@@ -572,6 +629,7 @@ class ViTModel(ViTPreTrainedModel):
         self.embeddings = ViTEmbeddings(config, use_mask_token=use_mask_token)
         self.encoder = ViTEncoder(config)
 
+        # This LayerNorm is for the final attention layer, before sending hidden vectors to pooler
         self.layernorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.pooler = ViTPooler(config) if add_pooling_layer else None
 
@@ -663,11 +721,13 @@ class ViTPooler(nn.Module):
     def __init__(self, config: ViTConfig):
         super().__init__()
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        # Tanh (hyperbolic tangent, monotone increasing, range is [-1, 1]) is usually used (instead of relu, gelu, ...) before classification/softmax 
         self.activation = nn.Tanh()
 
     def forward(self, hidden_states):
         # We "pool" the model by simply taking the hidden state corresponding
         # to the first token.
+        # Other choices include taking avg of all tokens, 
         first_token_tensor = hidden_states[:, 0]
         pooled_output = self.dense(first_token_tensor)
         pooled_output = self.activation(pooled_output)
@@ -825,6 +885,9 @@ class ViTForImageClassification(ViTPreTrainedModel):
         # Classifier head
         self.classifier = nn.Linear(config.hidden_size, config.num_labels) if config.num_labels > 0 else nn.Identity()
 
+        # For DeiT there may be an extra classifier head on distillation token, if we choose to do it this way:
+        # self.distillation_classifier = nn.Linear(config.hidden_size, config.num_labels) if config.num_labels > 0 else nn.Identity()
+
         # Initialize weights and apply final processing
         self.post_init()
 
@@ -850,6 +913,27 @@ class ViTForImageClassification(ViTPreTrainedModel):
             Labels for computing the image classification/regression loss. Indices should be in `[0, ...,
             config.num_labels - 1]`. If `config.num_labels == 1` a regression loss is computed (Mean-Square loss), If
             `config.num_labels > 1` a classification loss is computed (Cross-Entropy).
+
+        Returns:
+
+        Examples::
+
+            >>> from transformers import ViTFeatureExtractor, ViTForImageClassification
+            >>> from PIL import Image
+            >>> import requests
+
+            >>> url = 'http://images.cocodataset.org/val2017/000000039769.jpg'
+            >>> image = Image.open(requests.get(url, stream=True).raw)
+
+            >>> feature_extractor = ViTFeatureExtractor.from_pretrained('google/vit-base-patch16-224')
+            >>> model = ViTForImageClassification.from_pretrained('google/vit-base-patch16-224')
+
+            >>> inputs = feature_extractor(images=image, return_tensors="pt")
+            >>> outputs = model(**inputs)
+            >>> logits = outputs.logits
+            >>> # model predicts one of the 1000 ImageNet classes
+            >>> predicted_class_idx = logits.argmax(-1).item()
+            >>> print("Predicted class:", model.config.id2label[predicted_class_idx])
         """
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
@@ -861,10 +945,16 @@ class ViTForImageClassification(ViTPreTrainedModel):
             interpolate_pos_encoding=interpolate_pos_encoding,
             return_dict=return_dict,
         )
+        # outputs is a NamedTuple like dict, the first item is last layer hidden state, shape []
 
         sequence_output = outputs[0]
 
         logits = self.classifier(sequence_output[:, 0, :])
+        # The first token is [CLS]
+
+        # For DeiT, and if we choose to also use distillation token head:
+        # distillation_logits = self.distillation_classifier(sequence_output[:, 1, :])
+        # logits = (cls_logits + distillation_logits) / 2
 
         loss = None
         if labels is not None:

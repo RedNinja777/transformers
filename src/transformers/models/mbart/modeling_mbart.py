@@ -72,6 +72,12 @@ def shift_tokens_right(input_ids: torch.Tensor, pad_token_id: int):
     Shift input ids one token to the right, and wrap the last non pad token (the <LID> token) Note that MBart does not
     have a single `decoder_start_token_id` in contrast to other Bart-like models.
     """
+    # MBart decoder_start_token_id is a <LID>, depending on target language.
+    # How is it added?? 
+    # <LID> is added by mBart tokenizer to input_ids, either as suffix (CC-25) or prefix (mBart50).
+
+    # How about mBart50? <LID> is already the first token (made by MBart tokenizer) so no need to shift??
+
     prev_output_tokens = input_ids.clone()
 
     if pad_token_id is None:
@@ -79,12 +85,44 @@ def shift_tokens_right(input_ids: torch.Tensor, pad_token_id: int):
     # replace possible -100 values in labels by `pad_token_id`
     prev_output_tokens.masked_fill_(prev_output_tokens == -100, pad_token_id)
 
+    # Actually this finds the last nonpadding token in the sequence. Usually it's eos, but it's a <LID> in MBart.
     index_of_eos = (prev_output_tokens.ne(pad_token_id).sum(dim=1) - 1).unsqueeze(-1)
     decoder_start_tokens = prev_output_tokens.gather(1, index_of_eos).squeeze()
     prev_output_tokens[:, 1:] = prev_output_tokens[:, :-1].clone()
     prev_output_tokens[:, 0] = decoder_start_tokens
 
     return prev_output_tokens
+
+
+# Copied from transformers.models.bart.modeling_bart._make_causal_mask
+def _make_causal_mask(input_ids_shape: torch.Size, dtype: torch.dtype, past_key_values_length: int = 0):
+    """
+    Make causal mask used for bi-directional self-attention.
+    """
+    bsz, tgt_len = input_ids_shape
+    mask = torch.full((tgt_len, tgt_len), float("-inf"))
+    mask_cond = torch.arange(mask.size(-1))
+    mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
+    mask = mask.to(dtype)
+
+    if past_key_values_length > 0:
+        mask = torch.cat([torch.zeros(tgt_len, past_key_values_length, dtype=dtype), mask], dim=-1)
+    return mask[None, None, :, :].expand(bsz, 1, tgt_len, tgt_len + past_key_values_length)
+
+
+# Copied from transformers.models.bart.modeling_bart._expand_mask
+def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] = None):
+    """
+    Expands attention_mask from `[bsz, seq_len]` to `[bsz, 1, tgt_seq_len, src_seq_len]`.
+    """
+    bsz, src_len = mask.size()
+    tgt_len = tgt_len if tgt_len is not None else src_len
+
+    expanded_mask = mask[:, None, None, :].expand(bsz, 1, tgt_len, src_len).to(dtype)
+
+    inverted_mask = 1.0 - expanded_mask
+
+    return inverted_mask.masked_fill(inverted_mask.bool(), torch.finfo(dtype).min)
 
 
 # Copied from transformers.models.bart.modeling_bart.BartLearnedPositionalEmbedding with Bart->MBart
@@ -222,6 +260,7 @@ class MBartAttention(nn.Module):
         query_states = self._shape(query_states, tgt_len, bsz).view(*proj_shape)
         key_states = key_states.reshape(*proj_shape)
         value_states = value_states.reshape(*proj_shape)
+        # difference betwwen reshape and view?
 
         src_len = key_states.size(1)
         attn_weights = torch.bmm(query_states, key_states.transpose(1, 2))
@@ -1280,6 +1319,7 @@ class MBartDecoder(MBartPreTrainedModel):
 
         # expand encoder attention mask
         if encoder_hidden_states is not None and encoder_attention_mask is not None:
+            # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
             if self.config._attn_implementation == "flash_attention_2":
                 encoder_attention_mask = encoder_attention_mask if 0 in encoder_attention_mask else None
             elif self.config._attn_implementation == "sdpa" and cross_attn_head_mask is None and not output_attentions:
@@ -1470,6 +1510,7 @@ class MBartModel(MBartPreTrainedModel):
 
         # different to other models, MBart automatically creates decoder_input_ids from
         # input_ids if no decoder_input_ids are provided
+        # what if input_ids is None?
         if decoder_input_ids is None and decoder_inputs_embeds is None:
             decoder_input_ids = shift_tokens_right(input_ids, self.config.pad_token_id)
 
@@ -1597,6 +1638,8 @@ class MBartForConditionalGeneration(MBartPreTrainedModel, GenerationMixin):
         Returns:
 
         """
+        # input_ids is for encoder
+
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         if labels is not None:
@@ -1605,6 +1648,7 @@ class MBartForConditionalGeneration(MBartPreTrainedModel, GenerationMixin):
             use_cache = False
             if decoder_input_ids is None and decoder_inputs_embeds is None:
                 decoder_input_ids = shift_tokens_right(labels, self.config.pad_token_id)
+        # If no labels is provided (thus a decoding/generation task), what is decoder_input_ids?
 
         outputs = self.model(
             input_ids,

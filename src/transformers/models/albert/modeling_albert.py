@@ -185,6 +185,15 @@ def load_tf_weights_in_albert(model, config, tf_checkpoint_path):
     return model
 
 
+# One key feature in Albert is that embedding_size is much smaller than hidden_size.
+# The other is the use of groups which binds several AlbertLayerGroup (which in turn binds several AlbertLayer). AlbertLayerGroup is the minimal building block.
+# AlbertTransformer, which corresponds to BertEncoder, uses multiple groups, where each group contains multiple identical AlbertLayerGroup objects stacked. 
+
+
+# Albert also uses SOP to replace NSP loss. 
+# The SOP loss uses as positive examples the same technique as BERT (two consecutive segments from the same document), 
+# and as negative examples the same two consecutive segments but with their order swapped.
+
 class AlbertEmbeddings(nn.Module):
     """
     Construct the embeddings from word, position and token_type embeddings.
@@ -192,6 +201,10 @@ class AlbertEmbeddings(nn.Module):
 
     def __init__(self, config: AlbertConfig):
         super().__init__()
+
+        # replace base class attributes with new objects due to different naming of parameter.
+        # basically, the only difference is changing config.hidden_size to config.embedding_size.
+        # so in Albert, embedding_size is much smaller than hidden_size.
         self.word_embeddings = nn.Embedding(config.vocab_size, config.embedding_size, padding_idx=config.pad_token_id)
         self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.embedding_size)
         self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.embedding_size)
@@ -254,6 +267,8 @@ class AlbertEmbeddings(nn.Module):
 
 
 class AlbertAttention(nn.Module):
+    # Corresponds to the BertAttention module. 
+    # Include functionalities of BertSelfAttention, BertSelfOutput (Linear layer, drop out, residual connection, LayerNorm), and prune heads.
     def __init__(self, config: AlbertConfig):
         super().__init__()
         if config.hidden_size % config.num_attention_heads != 0 and not hasattr(config, "embedding_size"):
@@ -262,8 +277,11 @@ class AlbertAttention(nn.Module):
                 f"heads ({config.num_attention_heads}"
             )
 
+        # redundant as base class
         self.num_attention_heads = config.num_attention_heads
+        # redundant as base class
         self.hidden_size = config.hidden_size
+        # redundant as base class
         self.attention_head_size = config.hidden_size // config.num_attention_heads
         self.all_head_size = self.num_attention_heads * self.attention_head_size
 
@@ -273,6 +291,8 @@ class AlbertAttention(nn.Module):
 
         self.attention_dropout = nn.Dropout(config.attention_probs_dropout_prob)
         self.output_dropout = nn.Dropout(config.hidden_dropout_prob)
+
+        # these two corresponds to BertSelfOutput.
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.pruned_heads = set()
@@ -323,10 +343,12 @@ class AlbertAttention(nn.Module):
 
         # Take the dot product between "query" and "key" to get the raw attention scores.
         attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
+        # (batch_size, num_heads, seq_len_query, seq_len_key)
         attention_scores = attention_scores / math.sqrt(self.attention_head_size)
 
         if attention_mask is not None:
             # Apply the attention mask is (precomputed for all layers in BertModel forward() function)
+            # attention mask is simply padding mask, is precomputed for all layers in BertModel forward() function and passed into this forward()
             attention_scores = attention_scores + attention_mask
 
         if self.position_embedding_type == "relative_key" or self.position_embedding_type == "relative_key_query":
@@ -357,9 +379,14 @@ class AlbertAttention(nn.Module):
             attention_probs = attention_probs * head_mask
 
         context_layer = torch.matmul(attention_probs, value_layer)
+        # (batch_size, num_heads, seq_len_query, hidden_size)
         context_layer = context_layer.transpose(2, 1).flatten(2)
 
         projected_context_layer = self.dense(context_layer)
+        # projected_context_layer = torch.einsum("bfnd,ndh->bfh", context_layer, w) + b
+        # torch.einsum(equation, *operands) provides a way of computing multilinear expressions (i.e. sums of products) using the Einstein summation convention.
+        # torch.einsum('i,j->ij', x, y)  # outer product
+        # torch.einsum('bij,bjk->bik', As, Bs) # batch matrix multiplication
         projected_context_layer_dropout = self.output_dropout(projected_context_layer)
         layernormed_context_layer = self.LayerNorm(hidden_states + projected_context_layer_dropout)
         return (layernormed_context_layer, attention_probs) if output_attentions else (layernormed_context_layer,)
@@ -434,6 +461,7 @@ class AlbertLayer(nn.Module):
         self.seq_len_dim = 1
         self.full_layer_layer_norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.attention = ALBERT_ATTENTION_CLASSES[config._attn_implementation](config)
+        # increase hidden vector size to apply nonlinear activation.
         self.ffn = nn.Linear(config.hidden_size, config.intermediate_size)
         self.ffn_output = nn.Linear(config.intermediate_size, config.hidden_size)
         self.activation = ACT2FN[config.hidden_act]
@@ -471,6 +499,11 @@ class AlbertLayerGroup(nn.Module):
         super().__init__()
 
         self.albert_layers = nn.ModuleList([AlbertLayer(config) for _ in range(config.inner_group_num)])
+        # Are different layers the same object or different?? 
+        # Different objects, have different parameters.
+        # But paper says all AlbertLayer in one AlbertLayerGroup share parameters??
+        # This AlbertLayerGroup is different from the 'group' in the paper. 
+        # This AlbertLayerGroup should be used as the minimal building block when building AlbertTransformer.
 
     def forward(
         self,
@@ -494,6 +527,7 @@ class AlbertLayerGroup(nn.Module):
                 layer_hidden_states = layer_hidden_states + (hidden_states,)
 
         outputs = (hidden_states,)
+        # now hidden_states is the last layer's output, shape (batch_size, seq_len, hidden_size)
         if output_hidden_states:
             outputs = outputs + (layer_hidden_states,)
         if output_attentions:
@@ -502,12 +536,20 @@ class AlbertLayerGroup(nn.Module):
 
 
 class AlbertTransformer(nn.Module):
+    # Correspond to BertEncoder, but without the decoder functionality.
+    # Given input as output of AlbertEmbeddings.
+
+    # correspond to BertEncoder.
+    # Extra layer to convert hidden vector size from embedding_size to hidden_size because Albert uses much smaller embedding_size to save Embedding weight size.
+    # 
     def __init__(self, config: AlbertConfig):
         super().__init__()
 
         self.config = config
         self.embedding_hidden_mapping_in = nn.Linear(config.embedding_size, config.hidden_size)
         self.albert_layer_groups = nn.ModuleList([AlbertLayerGroup(config) for _ in range(config.num_hidden_groups)])
+        # AlbertLayerGroup objects in different groups are different objects.
+        # But the same AlbertLayerGroup object are stacked multiple times in a single group.
 
     def forward(
         self,
@@ -518,6 +560,9 @@ class AlbertTransformer(nn.Module):
         output_hidden_states: bool = False,
         return_dict: bool = True,
     ) -> Union[BaseModelOutput, Tuple]:
+        # input hidden_states is output of AlbertEmbeddings layer.
+
+        # convert dimension from embedding_size to hidden_size
         hidden_states = self.embedding_hidden_mapping_in(hidden_states)
 
         all_hidden_states = (hidden_states,) if output_hidden_states else None
@@ -530,6 +575,7 @@ class AlbertTransformer(nn.Module):
             layers_per_group = int(self.config.num_hidden_layers / self.config.num_hidden_groups)
 
             # Index of the hidden group
+            ## different i may map to the same group_idx, so the same AlbertLayerGroup is reused multiple times.
             group_idx = int(i / (self.config.num_hidden_layers / self.config.num_hidden_groups))
 
             layer_group_output = self.albert_layer_groups[group_idx](
@@ -549,6 +595,8 @@ class AlbertTransformer(nn.Module):
 
         if not return_dict:
             return tuple(v for v in [hidden_states, all_hidden_states, all_attentions] if v is not None)
+		# last-layer hidden state, (all hidden states), (all attentions)
+
         return BaseModelOutput(
             last_hidden_state=hidden_states, hidden_states=all_hidden_states, attentions=all_attentions
         )
@@ -687,6 +735,8 @@ ALBERT_INPUTS_DOCSTRING = r"""
     ALBERT_START_DOCSTRING,
 )
 class AlbertModel(AlbertPreTrainedModel):
+    # There is no self.albert attribute because this is the base module.
+    # no need the following since already defined in base class?
     config_class = AlbertConfig
     base_model_prefix = "albert"
 
@@ -779,6 +829,7 @@ class AlbertModel(AlbertPreTrainedModel):
             else:
                 token_type_ids = torch.zeros(input_shape, dtype=torch.long, device=device)
 
+        # should use base class method instead
         embedding_output = self.embeddings(
             input_ids, position_ids=position_ids, token_type_ids=token_type_ids, inputs_embeds=inputs_embeds
         )
@@ -801,6 +852,9 @@ class AlbertModel(AlbertPreTrainedModel):
 
         head_mask = self.get_head_mask(head_mask, self.config.num_hidden_layers)
 
+        # embeddings input token ids first
+
+        # the entire transformer as encoder
         encoder_outputs = self.encoder(
             embedding_output,
             extended_attention_mask,
@@ -810,10 +864,15 @@ class AlbertModel(AlbertPreTrainedModel):
             return_dict=return_dict,
         )
 
+        # use output of the first token as pooler token which will go through tanh activation
         sequence_output = encoder_outputs[0]
 
+        # use the first token output hidden vector for classification.
+        # Do nonlinear activation (tanh) here!
         pooled_output = self.pooler_activation(self.pooler(sequence_output[:, 0])) if self.pooler is not None else None
 
+
+        # add hidden_states and attentions if they are here
         if not return_dict:
             return (sequence_output, pooled_output) + encoder_outputs[1:]
 
@@ -943,7 +1002,9 @@ class AlbertMLMHead(nn.Module):
 
         self.LayerNorm = nn.LayerNorm(config.embedding_size, eps=config.layer_norm_eps)
         self.bias = nn.Parameter(torch.zeros(config.vocab_size))
+        # apply first to convert vector size from hidden_size to embedding_size, so can tie input and output embedding weights.
         self.dense = nn.Linear(config.hidden_size, config.embedding_size)
+        # next nonlinear activation on embedding_size
         self.decoder = nn.Linear(config.embedding_size, config.vocab_size)
         self.activation = ACT2FN[config.hidden_act]
         self.decoder.bias = self.bias
@@ -1156,6 +1217,10 @@ class AlbertForSequenceClassification(AlbertPreTrainedModel):
         pooled_output = outputs[1]
 
         pooled_output = self.dropout(pooled_output)
+
+        # no nonlinear (tanh) before classifier? 
+        # pooled_output = outputs[1], tanh activation is already done inside AlbertModel for the pooler token (first token)
+
         logits = self.classifier(pooled_output)
 
         loss = None
@@ -1257,6 +1322,8 @@ class AlbertForTokenClassification(AlbertPreTrainedModel):
         sequence_output = outputs[0]
 
         sequence_output = self.dropout(sequence_output)
+
+        # no nonlinear (tanh) before classifier? should add one?
         logits = self.classifier(sequence_output)
 
         loss = None

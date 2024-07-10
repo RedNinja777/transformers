@@ -20,6 +20,10 @@ from ...utils import logging
 
 logger = logging.get_logger(__name__)
 
+CTRL_PRETRAINED_CONFIG_ARCHIVE_MAP = {
+    "Salesforce/ctrl": "https://huggingface.co/Salesforce/ctrl/resolve/main/config.json"
+}
+
 
 class CTRLConfig(PretrainedConfig):
     """
@@ -111,6 +115,37 @@ class CTRLConfig(PretrainedConfig):
         self.use_cache = use_cache
 
         super().__init__(**kwargs)
+
+
+
+
+# sample config https://storage.googleapis.com/sf-ctrl/pytorch/ctrl-config.json
+# {
+#   "attn_pdrop": 0.1,
+#   "dff": 8192,
+#   "embd_pdrop": 0.1,
+#   "finetuning_task": null,
+#   "initializer_range": 0.02,
+#   "layer_norm_epsilon": 1e-06,
+#   "n_embd": 1280,
+#   "n_head": 16,
+#   "n_layer": 48,
+#   "n_positions": 50000,
+#   "num_labels": 1,
+#   "output_attentions": false,
+#   "output_hidden_states": false,
+#   "pruned_heads": {},
+#   "resid_pdrop": 0.1,
+#   "summary_activation": null,
+#   "summary_first_dropout": 0.1,
+#   "summary_proj_to_labels": true,
+#   "summary_type": "cls_index",
+#   "summary_use_proj": true,
+#   "torchscript": false,
+#   "use_bfloat16": false,
+#   "vocab_size": 246534,
+#   "from_tf": false
+# }
 
 
 __all__ = ["CTRLConfig"]

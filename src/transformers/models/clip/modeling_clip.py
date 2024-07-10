@@ -55,17 +55,89 @@ _CHECKPOINT_FOR_DOC = "openai/clip-vit-base-patch32"
 _IMAGE_CLASS_CHECKPOINT = "openai/clip-vit-base-patch32"
 _IMAGE_CLASS_EXPECTED_OUTPUT = "LABEL_0"
 
+CLIP_PRETRAINED_MODEL_ARCHIVE_LIST = [
+    "openai/clip-vit-base-patch32",
+    "openai/clip-vit-base-patch16",
+    # See all CLIP models at https://huggingface.co/models?filter=clip
+]
+
+
+# Copied from transformers.models.bart.modeling_bart._expand_mask
+# This function is removed in new version
+def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] = None):
+    """
+    Expands attention_mask from `[bsz, seq_len]` to `[bsz, 1, tgt_seq_len, src_seq_len]`.
+    """
+    # input variable 'mask' is the padding token mask of source sequence, the 'key'. shape [bsz, src_seq_len]
+    # This is padding token mask (not causal mask) of attention from query (tgt) to key (src).
+    # tgt and src can be for the same sequence (either encoder or decoder)
+    # What's the size 1 of dim-1 for?
+    bsz, src_len = mask.size()
+    tgt_len = tgt_len if tgt_len is not None else src_len
+
+    expanded_mask = mask[:, None, None, :].expand(bsz, 1, tgt_len, src_len).to(dtype)
+    # first change to shape [bsz, 1, 1, src_seq_len], then expand to [bsz, 1, tgt_seq_len, src_seq_len]
+
+    # normal mask: 1 or True for real token, 0 or False for padding token
+    # inverted_mask is the opposite: 0 or False for real token, 1 or True for padding token.
+    inverted_mask = 1.0 - expanded_mask
+
+    return inverted_mask.masked_fill(inverted_mask.bool(), torch.finfo(dtype).min)
+    # Tensor.masked_fill_(mask, value) Fills tensor elements with value where mask is True. The shape of mask must be broadcastable with the shape of the underlying tensor.
+    # So after masked_fill(), value is -inf for padding tokens which is 1 or True, 0 for real tokens
+
+    # A torch.finfo is an object that represents the numerical properties of a floating point torch.dtype, (i.e. torch.float32, torch.float64, and torch.float16). 
+
 
 # contrastive loss function, adapted from
 # https://sachinruk.github.io/blog/2021-03-07-clip.html
 def contrastive_loss(logits: torch.Tensor) -> torch.Tensor:
+    # here logits shape is [batch_size_text, batch_size_image]. It's cosine similarity matrix of a normalized text vector and normalized image vector.
+    # Why normalize before similarity? If directly computing cos similarity, then no need to normalize.
+    # But the similarity is actually computed by doing matrix multiplication, i.e., dot product. So normalize vectors before dot product.
     return nn.functional.cross_entropy(logits, torch.arange(len(logits), device=logits.device))
+    # logits shape [batch_size, num_class], target shape [batch_size], and value is [0, 1, ..., num_class - 1]. Here batch_size = num_class
+    # by default reduction='mean', cross_entropy will return a scalar tensor.
 
 
 def clip_loss(similarity: torch.Tensor) -> torch.Tensor:
+    # similarity = torch.matmul(text_embeds, image_embeds.t()) * logit_scale   # shape: [batch_size_text, batch_size_image]
+    # logit_scale is logit_scale = self.logit_scale.exp()   # self.logit_scale is learnable scalar parameter initialized with 2.65926 = np.log(1 / 0.07))
     caption_loss = contrastive_loss(similarity)
     image_loss = contrastive_loss(similarity.t())
     return (caption_loss + image_loss) / 2.0
+
+
+# The following two functions are mine
+
+# The simple contrastive loss may not be best if in a batch, multiple images are similar to a text, or multiple texts are similar to an image
+def my_clip_loss(text_image_similarity, text_embeds, image_embeds, logit_scale):
+    # text_embeds and image_embeds are normalized embeddings, shape [batch_size, emb_dim]
+    # text_image_similarity = torch.matmul(text_embeds, image_embeds.t()) * logit_scale   # shape: [batch_size_text, batch_size_image]
+    texts_similarity = torch.matmul(text_embeds, text_embeds.t()) * logit_scale
+    images_similarity = torch.matmul(image_embeds, image_embeds.t()) * logit_scale
+    # # Is the following correct?
+    # targets = nn.functional.softmax((images_similarity + texts_similarity) / 2.0, dim=-1)
+    # text_loss = nn.functional.cross_entropy(text_image_similarity, targets)
+    # image_loss = nn.functional.cross_entropy(text_image_similarity.T, targets.T)
+
+    # should use the following?
+    text_loss = nn.functional.cross_entropy(text_image_similarity, nn.functional.softmax(images_similarity, dim=-1))  # ? texts_similarity
+    image_loss = nn.functional.cross_entropy(text_image_similarity.T, nn.functional.softmax(texts_similarity, dim=-1))  # ? images_similarity
+    # text_loss = nn.functional.cross_entropy(text_image_similarity, nn.functional.softmax(texts_similarity, dim=-1))  # ? images_similarity
+    # image_loss = nn.functional.cross_entropy(text_image_similarity.T, nn.functional.softmax(images_similarity, dim=-1))  # ?texts_similarity
+
+    return (text_loss + image_loss) / 2.0
+
+def my_cross_entropy(logits, targets, reduction='none'):
+    log_softmax = nn.LogSoftmax(dim=-1)   # first Softmax to turn logits into probs, then Log probs. 
+    loss = (-targets * log_softmax(logits)).sum(1)
+    if reduction == "none":
+        return loss
+    elif reduction == "mean":
+        return loss.mean()
+
+
 
 
 def _get_vector_norm(tensor: torch.Tensor) -> torch.Tensor:
@@ -181,8 +253,12 @@ class CLIPVisionEmbeddings(nn.Module):
         self.embed_dim = config.hidden_size
         self.image_size = config.image_size
         self.patch_size = config.patch_size
+        # image is resized to square shape, typically 224 X 224.
+        # Each patch is also smaller square, typically 32 X 32 or 16 X 16.
 
+        # torch.randn(*size) return normal RVs of shape [size]
         self.class_embedding = nn.Parameter(torch.randn(self.embed_dim))
+        # class_embedding is embedding vector of a single token similar to [CLS]
 
         self.patch_embedding = nn.Conv2d(
             in_channels=config.num_channels,
@@ -191,11 +267,19 @@ class CLIPVisionEmbeddings(nn.Module):
             stride=self.patch_size,
             bias=False,
         )
+        # when no padding and kernel_size = stride, the receptive fields of ConvNet have no overlap. 
+        # input tensor shape [batch_size, in_channels, image_height, image_width]
+        # output tensor shape [batch_size, output_channels (embed_dim), image_size[0] // patch_size[0], image_size[1] // patch_size[1]]
 
         self.num_patches = (self.image_size // self.patch_size) ** 2
+        # 1 is for the extra classifier token added before sequence of patches
         self.num_positions = self.num_patches + 1
         self.position_embedding = nn.Embedding(self.num_positions, self.embed_dim)
+        # shape [1, num_positions]
         self.register_buffer("position_ids", torch.arange(self.num_positions).expand((1, -1)), persistent=False)
+        # Buffers are tensors, which are registered in the module and will thus be inside the state_dict.
+        # These tensors do not require gradients and are thus not registered as parameters.
+        # This is useful e.g. to track the mean and std in batchnorm layers etc. which should be stored and loaded using the state_dict of the module.
 
     def interpolate_pos_encoding(self, embeddings: torch.Tensor, height: int, width: int) -> torch.Tensor:
         """
@@ -239,6 +323,8 @@ class CLIPVisionEmbeddings(nn.Module):
         return torch.cat((class_pos_embed, patch_pos_embed), dim=1)
 
     def forward(self, pixel_values: torch.FloatTensor, interpolate_pos_encoding=False) -> torch.Tensor:
+        # "pixel_values" is a key of BatchFeature.data (BatchFeature derives UserDict) returned by CLIPFeatureExtractor.__call__(), or CLIPProcessor.__call__().
+        # stores a batch of images tensors.
         batch_size, _, height, width = pixel_values.shape
         if not interpolate_pos_encoding and (height != self.image_size or width != self.image_size):
             raise ValueError(
@@ -246,9 +332,15 @@ class CLIPVisionEmbeddings(nn.Module):
             )
         target_dtype = self.patch_embedding.weight.dtype
         patch_embeds = self.patch_embedding(pixel_values.to(dtype=target_dtype))  # shape = [*, width, grid, grid]
+        # shape = [batch_size, output_channels (embed_dim), #grid in height, #grid in width]
+        # patch_embeds shape [batch_size, hidden_size, image_size[0] // patch_size[0], image_size[1] // patch_size[1]]
         patch_embeds = patch_embeds.flatten(2).transpose(1, 2)
+        # torch.flatten(input, start_dim=0, end_dim=-1) Flattens input by reshaping it into a one-dimensional tensor. 
+        # If start_dim or end_dim are passed, only dimensions starting with start_dim and ending with end_dim are flattened. The order of elements in input is unchanged.
+        # flatten(2) reshape to [batch_size, hidden_size, num_patches (same as sequence length)]
 
         class_embeds = self.class_embedding.expand(batch_size, 1, -1)
+        # class_embeds shape [batch_size, 1, hidden_size], as a token similar to [CLS]
         embeddings = torch.cat([class_embeds, patch_embeds], dim=1)
         if interpolate_pos_encoding:
             embeddings = embeddings + self.interpolate_pos_encoding(embeddings, height, width)
@@ -276,6 +368,7 @@ class CLIPTextEmbeddings(nn.Module):
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
     ) -> torch.Tensor:
+        # input_ids shape [batch_size, seq_len]; inputs_embeds shape [batch_size, seq_len, embed_dim]
         seq_length = input_ids.shape[-1] if input_ids is not None else inputs_embeds.shape[-2]
         max_position_embedding = self.position_embedding.weight.shape[0]
 
@@ -321,6 +414,7 @@ class CLIPAttention(nn.Module):
 
     def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int):
         return tensor.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
+        # returned tensor shape [batch_size, num_heads, seq_len, head_dim]
 
     def forward(
         self,
@@ -342,9 +436,15 @@ class CLIPAttention(nn.Module):
         query_states = self._shape(query_states, tgt_len, bsz).view(*proj_shape)
         key_states = key_states.view(*proj_shape)
         value_states = value_states.view(*proj_shape)
+        # query is the target sequence; key and value are the source sequence.
+        # All have shape [bsz * self.num_heads, seq_len, head_dim]
 
         src_len = key_states.size(1)
         attn_weights = torch.bmm(query_states, key_states.transpose(1, 2))
+        # torch.bmm(input, mat2, *, out=None) ? Tensor Performs a batch matrix-matrix product of matrices stored in input and mat2.
+        # input and mat2 must be 3-D tensors each containing the same number of matrices.
+        # If input is a (b X n X m) tensor, mat2 is a (b X m X p) tensor, out will be a (b X n X p) tensor.
+        # NOTE This function does not broadcast. For broadcasting matrix products, see torch.matmul().
 
         if attn_weights.size() != (bsz * self.num_heads, tgt_len, src_len):
             raise ValueError(
@@ -359,6 +459,7 @@ class CLIPAttention(nn.Module):
                     f"Attention mask should be of size {(bsz, 1, tgt_len, src_len)}, but is"
                     f" {causal_attention_mask.size()}"
                 )
+            # causal_attention_mask is: for every token in target seq, whether it can attends to a token in the source sequence.
             attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len) + causal_attention_mask
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
 
@@ -377,11 +478,13 @@ class CLIPAttention(nn.Module):
             # make sure that attn_weights keeps its gradient.
             # In order to do so, attn_weights have to reshaped
             # twice and have to be reused in the following
+            # What the reason?
             attn_weights_reshaped = attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
             attn_weights = attn_weights_reshaped.view(bsz * self.num_heads, tgt_len, src_len)
         else:
             attn_weights_reshaped = None
 
+        # torch.nn.functional.dropout(input, p=0.5, training=True, inplace=False) if training=True, randomly zeroes some of the elements of the input tensor with probability p.
         attn_probs = nn.functional.dropout(attn_weights, p=self.dropout, training=self.training)
 
         attn_output = torch.bmm(attn_probs, value_states)
@@ -395,6 +498,7 @@ class CLIPAttention(nn.Module):
         attn_output = attn_output.view(bsz, self.num_heads, tgt_len, self.head_dim)
         attn_output = attn_output.transpose(1, 2)
         attn_output = attn_output.reshape(bsz, tgt_len, embed_dim)
+        # no need to do .contiguous()?
 
         attn_output = self.out_proj(attn_output)
 
@@ -576,6 +680,8 @@ class CLIPMLP(nn.Module):
         self.fc2 = nn.Linear(config.intermediate_size, config.hidden_size)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        # no layernorm after activation in case activation is not zero-centered?
+        # not doing it here; doing it afterwards. Typically, layernorm is done after residual link.
         hidden_states = self.fc1(hidden_states)
         hidden_states = self.activation_fn(hidden_states)
         hidden_states = self.fc2(hidden_states)
@@ -879,6 +985,15 @@ class CLIPEncoder(nn.Module):
                     causal_attention_mask,
                     output_attentions,
                 )
+                # torch.utils.checkpoint.checkpoint(function, *args, **kwargs) Checkpoint a model or part of the model. Returns Output of running function(*args, **kwargs).
+                # Checkpointing works by trading compute for memory. Rather than storing all intermediate activations of the entire computation graph for computing backward, 
+                # the checkpointed part does not save intermediate activations, and instead recomputes them in backward pass. It can be applied on any part of a model.
+                # Specifically, in the forward pass, function will run in torch.no_grad() manner, i.e., not storing the intermediate activations. 
+                # Instead, the forward pass saves the inputs tuple and the function parameter. In the backwards pass, the saved inputs and function is retrieved, 
+                # and the forward pass is computed on function again, now tracking the intermediate activations, and then the gradients are calculated using these activation values.
+                # The output of function can contain non-Tensor values and gradient recording is only performed for the Tensor values. 
+                # Note that if the output consists of nested structures (ex: custom objects, lists, dicts etc.) consisting of Tensors, 
+                # these Tensors nested in custom structures will not be considered as part of autograd.
             else:
                 layer_outputs = encoder_layer(
                     hidden_states,
@@ -944,6 +1059,7 @@ class CLIPTextTransformer(nn.Module):
         input_shape = input_ids.size()
         input_ids = input_ids.view(-1, input_shape[-1])
 
+        # self.embeddings is a nn.Module, not tensor. It outputs tensor.
         hidden_states = self.embeddings(input_ids=input_ids, position_ids=position_ids)
 
         # CLIP's text model uses causal mask, prepare it here.
@@ -951,11 +1067,14 @@ class CLIPTextTransformer(nn.Module):
         causal_attention_mask = _create_4d_causal_attention_mask(
             input_shape, hidden_states.dtype, device=hidden_states.device
         )
+        # causal_attention_mask shape []; value is -inf for unattendable tokens (after the query token), 0 for attendable tokens (on and before the query token)
+
 
         # expand attention_mask
         if attention_mask is not None and not self._use_flash_attention_2:
             # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
             attention_mask = _prepare_4d_attention_mask(attention_mask, hidden_states.dtype)
+        # after _expand_mask(), attention_mask shape [bsz, 1, seq_len, seq_len]; value is -inf for padding tokens, 0 for real tokens
 
         encoder_outputs = self.encoder(
             inputs_embeds=hidden_states,
@@ -967,8 +1086,11 @@ class CLIPTextTransformer(nn.Module):
         )
 
         last_hidden_state = encoder_outputs[0]
+        # last_hidden_state is the last (top) encoder layer output, shape [batch_size, seq_len, hidden_size]
         last_hidden_state = self.final_layer_norm(last_hidden_state)
 
+        # text_embeds.shape = [batch_size, sequence_length, transformer.width]
+        # take features from the eot embedding (eot_token is the highest number in each sequence)
         if self.eos_token_id == 2:
             # The `eos_token_id` was incorrect before PR #24773: Let's keep what have been done here.
             # A CLIP model with such `eos_token_id` in the config can't work correctly with extra new tokens added
@@ -1001,6 +1123,20 @@ class CLIPTextTransformer(nn.Module):
             attentions=encoder_outputs.attentions,
         )
 
+    # This function is removed in new version
+    def _build_causal_attention_mask(self, bsz, seq_len):
+        # lazily create causal attention mask, with full attention between the vision tokens
+        # pytorch uses additive attention mask; fill with -inf
+        mask = torch.empty(bsz, seq_len, seq_len)  # Returns a tensor filled with uninitialized data. The shape of the tensor is defined by the variable argument size
+        mask.fill_(float("-inf"))
+        mask.triu_(1)  # zero out the lower diagonal. The main diagonal is also zeroed out.
+        # torch.triu(input, diagonal=0, *, out=None) Returns the upper triangular part of a matrix (2-D tensor) or batch of matrices input, the other elements of the result tensor out are set to 0.
+        # The upper triangular part of the matrix is defined as the elements ON AND ABOVE the diagonal.
+        # The argument diagonal controls which diagonal to consider. If diagonal = 0, all elements on and above the main diagonal are retained. 
+        # A positive value excludes just as many diagonals above the main diagonal, and similarly a negative value includes just as many diagonals below the main diagonal. 
+        mask = mask.unsqueeze(1)  # expand mask
+        return mask
+        # mask shape [bsz, 1, seq_len, seq_len]
 
 @add_start_docstrings(
     """The text model from CLIP without any head or projection on top.""",
@@ -1019,6 +1155,7 @@ class CLIPTextModel(CLIPPreTrainedModel):
 
     def get_input_embeddings(self) -> nn.Module:
         return self.text_model.embeddings.token_embedding
+        # actually CLIPTextTransformer.embeddings.token_embedding is a nn.Embedding module. It's callable to turn ids into embeddings
 
     def set_input_embeddings(self, value):
         self.text_model.embeddings.token_embedding = value
@@ -1088,6 +1225,7 @@ class CLIPVisionTransformer(nn.Module):
         Returns:
 
         """
+        # pixel_values is a batch of image tensors
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -1108,6 +1246,7 @@ class CLIPVisionTransformer(nn.Module):
         )
 
         last_hidden_state = encoder_outputs[0]
+        # the hidden state of the first token of patch sequence, which is like [CLS]
         pooled_output = last_hidden_state[:, 0, :]
         pooled_output = self.post_layernorm(pooled_output)
 
@@ -1185,6 +1324,7 @@ class CLIPVisionModel(CLIPPreTrainedModel):
 
 @add_start_docstrings(CLIP_START_DOCSTRING)
 class CLIPModel(CLIPPreTrainedModel):
+    # inherits CLIPPreTrainedModel, but does not assign self.clip, so getattr(CLIPModel, clip) is None
     config_class = CLIPConfig
     _no_split_modules = ["CLIPTextEmbeddings", "CLIPEncoderLayer", "CLIPVisionEmbeddings"]
 
@@ -1219,6 +1359,8 @@ class CLIPModel(CLIPPreTrainedModel):
         self.visual_projection = nn.Linear(self.vision_embed_dim, self.projection_dim, bias=False)
         self.text_projection = nn.Linear(self.text_embed_dim, self.projection_dim, bias=False)
         self.logit_scale = nn.Parameter(torch.tensor(self.config.logit_scale_init_value))
+        # learnable scalar parameter to weight similarity. 
+        # torch.ones([]) creates a scalar tensor 1.0. All other ways will create an array of 1.0
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -1366,6 +1508,8 @@ class CLIPModel(CLIPPreTrainedModel):
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
+        # input_ids (text) and pixel_values (image) do NOT need have the same batch size!
+        # but to do contrastive loss, they should have the same batch size, and corresponding index are paired.
         vision_outputs = self.vision_model(
             pixel_values=pixel_values,
             output_attentions=output_attentions,
@@ -1383,22 +1527,35 @@ class CLIPModel(CLIPPreTrainedModel):
             return_dict=return_dict,
         )
 
+        # take pooled output hidden state of text and image
         image_embeds = vision_outputs[1]
         image_embeds = self.visual_projection(image_embeds)
 
         text_embeds = text_outputs[1]
         text_embeds = self.text_projection(text_embeds)
+        
+        # text embeds shape: [text_batch_size, projection_dim]; 
+        # image embeds shape: [image_batch_size, projection_dim]
 
         # normalized features
         image_embeds = image_embeds / _get_vector_norm(image_embeds)
         text_embeds = text_embeds / _get_vector_norm(text_embeds)
+        # torch.norm(input, p='fro', dim=None, keepdim=False, out=None, dtype=None): Returns the matrix norm or vector norm of a given tensor.
+        # WARNING: torch.norm is deprecated and may be removed in a future PyTorch release. 
+        # Use torch.linalg.norm(), instead, or torch.linalg.vector_norm() when computing vector norms and torch.linalg.matrix_norm() when computing matrix norms. 
+        # Note, however, the signature for these functions is slightly different than the signature for torch.norm.
+        # Use nn.functional.normalize(image_embeds, dim=-1) ??
 
         # cosine similarity as logits
+        # self.logit_scale is learnable parameter initialized with 2.65926 = np.log(1 / 0.07))
         logit_scale = self.logit_scale.exp()
         logits_per_text = torch.matmul(text_embeds, image_embeds.t().to(text_embeds.device)) * logit_scale.to(
             text_embeds.device
         )
+        # shape: [batch_size_text, batch_size_image]
         logits_per_image = logits_per_text.t()
+        # logits_per_image shape: [image_batch_size, text_batch_size]
+        # logits_per_text: [text_batch_size, image_batch_size]
 
         loss = None
         if return_loss:
@@ -1640,6 +1797,7 @@ class CLIPForImageClassification(CLIPPreTrainedModel):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
+        # outputs is a NamedTuple like dict, the first item is last layer hidden state, shape []
 
         sequence_output = outputs[0]
 
@@ -1647,6 +1805,11 @@ class CLIPForImageClassification(CLIPPreTrainedModel):
         sequence_output = torch.mean(sequence_output[:, 1:, :], dim=1)
         # apply classifier
         logits = self.classifier(sequence_output)
+        # The first token is [CLS]
+
+        # For DeiT, and if we choose to also use distillation token head:
+        # distillation_logits = self.distillation_classifier(sequence_output[:, 1, :])
+        # logits = (cls_logits + distillation_logits) / 2
 
         loss = None
         if labels is not None:

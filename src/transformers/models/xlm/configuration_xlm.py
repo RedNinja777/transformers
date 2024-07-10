@@ -24,6 +24,19 @@ from ...utils import logging
 
 logger = logging.get_logger(__name__)
 
+XLM_PRETRAINED_CONFIG_ARCHIVE_MAP = {
+    "FacebookAI/xlm-mlm-en-2048": "https://huggingface.co/FacebookAI/xlm-mlm-en-2048/resolve/main/config.json",
+    "FacebookAI/xlm-mlm-ende-1024": "https://huggingface.co/FacebookAI/xlm-mlm-ende-1024/resolve/main/config.json",
+    "FacebookAI/xlm-mlm-enfr-1024": "https://huggingface.co/FacebookAI/xlm-mlm-enfr-1024/resolve/main/config.json",
+    "FacebookAI/xlm-mlm-enro-1024": "https://huggingface.co/FacebookAI/xlm-mlm-enro-1024/resolve/main/config.json",
+    "FacebookAI/xlm-mlm-tlm-xnli15-1024": "https://huggingface.co/FacebookAI/xlm-mlm-tlm-xnli15-1024/resolve/main/config.json",
+    "FacebookAI/xlm-mlm-xnli15-1024": "https://huggingface.co/FacebookAI/xlm-mlm-xnli15-1024/resolve/main/config.json",
+    "FacebookAI/xlm-clm-enfr-1024": "https://huggingface.co/FacebookAI/xlm-clm-enfr-1024/resolve/main/config.json",
+    "FacebookAI/xlm-clm-ende-1024": "https://huggingface.co/FacebookAI/xlm-clm-ende-1024/resolve/main/config.json",
+    "FacebookAI/xlm-mlm-17-1280": "https://huggingface.co/FacebookAI/xlm-mlm-17-1280/resolve/main/config.json",
+    "FacebookAI/xlm-mlm-100-1280": "https://huggingface.co/FacebookAI/xlm-mlm-100-1280/resolve/main/config.json",
+}
+
 
 class XLMConfig(PretrainedConfig):
     """
@@ -236,6 +249,50 @@ class XLMOnnxConfig(OnnxConfig):
                 ("token_type_ids", dynamic_axis),
             ]
         )
+
+
+
+# an example config https://s3.amazonaws.com/models.huggingface.co/bert/xlm-mlm-en-2048-config.json
+# {
+#   "architectures": [
+#     "XLMWithLMHeadModel"
+#   ],
+#   "asm": false,
+#   "attention_dropout": 0.1,
+#   "bos_index": 0,
+#   "bos_token_id": 0,
+#   "causal": false,
+#   "dropout": 0.1,
+#   "emb_dim": 2048,
+#   "embed_init_std": 0.02209708691207961,
+#   "end_n_top": 5,
+#   "eos_index": 1,
+#   "gelu_activation": true,
+#   "init_std": 0.02,
+#   "is_encoder": true,
+#   "lang_id": 0,
+#   "layer_norm_eps": 1e-12,
+#   "mask_index": 5,
+#   "mask_token_id": 0,
+#   "max_position_embeddings": 512,
+#   "model_type": "xlm",
+#   "n_heads": 16,
+#   "n_langs": 1,
+#   "n_layers": 12,
+#   "pad_index": 2,
+#   "pad_token_id": 2,
+#   "sinusoidal_embeddings": false,
+#   "start_n_top": 5,
+#   "summary_activation": null,
+#   "summary_first_dropout": 0.1,
+#   "summary_proj_to_labels": true,
+#   "summary_type": "first",
+#   "summary_use_proj": true,
+#   "unk_index": 3,
+#   "use_lang_emb": true,
+#   "vocab_size": 30145
+# }
+
 
 
 __all__ = ["XLMConfig", "XLMOnnxConfig"]

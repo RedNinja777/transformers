@@ -87,6 +87,7 @@ class MT5Config(PretrainedConfig):
         d_ff=1024,
         num_layers=8,
         num_decoder_layers=None,
+        # num_heads * d_kv != d_model? T5 base num_heads = 8.
         num_heads=6,
         relative_attention_num_buckets=32,
         relative_attention_max_distance=128,
@@ -112,6 +113,7 @@ class MT5Config(PretrainedConfig):
         self.num_decoder_layers = (
             num_decoder_layers if num_decoder_layers is not None else self.num_layers
         )  # default = symmetry
+        # (when num_decoder_layers=None) = symmetry between encoder and decoder
         self.num_heads = num_heads
         self.relative_attention_num_buckets = relative_attention_num_buckets
         self.relative_attention_max_distance = relative_attention_max_distance
@@ -177,6 +179,38 @@ class MT5OnnxConfig(OnnxSeq2SeqConfigWithPast):
     @property
     def atol_for_validation(self) -> float:
         return 5e-4
+
+
+# example config: https://huggingface.co/google/mt5-large/blob/main/config.json
+
+# {
+#   "_name_or_path": "/home/patrick/hugging_face/t5/mt5-large",
+#   "architectures": [
+#     "MT5ForConditionalGeneration"
+#   ],
+#   "d_ff": 2816,  # 1024 for small, 2048 for base, 2816 for large, 5120 for xl
+#   "d_kv": 64,  # 64 for small, 64 for base, 64 for large, 64 for xl
+#   "d_model": 1024,  # 512 for small, 768 for base, 1024 for large, 2048 for xl
+#   "decoder_start_token_id": 0,
+#   "dropout_rate": 0.1,
+#   "eos_token_id": 1,
+#   "feed_forward_proj": "gated-gelu",
+#   "initializer_factor": 1.0,
+#   "is_encoder_decoder": true,
+#   "layer_norm_epsilon": 1e-06,
+#   "model_type": "mt5",
+#   "num_decoder_layers": 24,  # 8 for small, 12 for base, 24 for large, 24 for xl
+#   "num_heads": 16,  # 6 for small, 12 for base, 16 for large, 32 for xl
+#   "num_layers": 24,  # 8 for small, 12 for base, 24 for large, 24 for xl
+#   "output_past": true,
+#   "pad_token_id": 0,
+#   "relative_attention_num_buckets": 32,
+#   "tie_word_embeddings": false,
+#   "tokenizer_class": "T5Tokenizer",
+#   "vocab_size": 250112
+# }
+
+
 
 
 __all__ = ["MT5Config", "MT5OnnxConfig"]

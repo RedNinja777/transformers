@@ -29,6 +29,77 @@ SPIECE_UNDERLINE = "▁"
 
 VOCAB_FILES_NAMES = {"vocab_file": "sentencepiece.bpe.model"}
 
+PRETRAINED_VOCAB_FILES_MAP = {
+    "vocab_file": {
+        "facebook/mbart-large-en-ro": (
+            "https://huggingface.co/facebook/mbart-large-en-ro/resolve/main/sentencepiece.bpe.model"
+        ),
+        "facebook/mbart-large-cc25": (
+            "https://huggingface.co/facebook/mbart-large-cc25/resolve/main/sentencepiece.bpe.model"
+        ),
+    }
+}
+
+PRETRAINED_POSITIONAL_EMBEDDINGS_SIZES = {
+    "facebook/mbart-large-en-ro": 1024,
+    "facebook/mbart-large-cc25": 1024,
+}
+
+# These codes will be added to vocab in __init__(). 
+# They are also treated as special tokens, so no split, no casing.
+# They are added to be special tokens because the list is assigned to self._additional_special_tokens
+FAIRSEQ_LANGUAGE_CODES = [
+    "ar_AR",
+    "cs_CZ",
+    "de_DE",
+    "en_XX",
+    "es_XX",
+    "et_EE",
+    "fi_FI",
+    "fr_XX",
+    "gu_IN",
+    "hi_IN",
+    "it_IT",
+    "ja_XX",
+    "kk_KZ",
+    "ko_KR",
+    "lt_LT",
+    "lv_LV",
+    "my_MM",
+    "ne_NP",
+    "nl_XX",
+    "ro_RO",
+    "ru_RU",
+    "si_LK",
+    "tr_TR",
+    "vi_VN",
+    "zh_CN",
+]
+
+# The followings are from XLMRobertaTokenizer
+# SPIECE_UNDERLINE = "▁"   # the special character used for space in SPE
+
+# VOCAB_FILES_NAMES = {"vocab_file": "sentencepiece.bpe.model"}
+
+# PRETRAINED_VOCAB_FILES_MAP = {
+#     "vocab_file": {
+#         "xlm-roberta-base": "https://huggingface.co/xlm-roberta-base/resolve/main/sentencepiece.bpe.model",
+#         "xlm-roberta-large": "https://huggingface.co/xlm-roberta-large/resolve/main/sentencepiece.bpe.model",
+#         "xlm-roberta-large-finetuned-conll02-dutch": "https://huggingface.co/xlm-roberta-large-finetuned-conll02-dutch/resolve/main/sentencepiece.bpe.model",
+#         "xlm-roberta-large-finetuned-conll02-spanish": "https://huggingface.co/xlm-roberta-large-finetuned-conll02-spanish/resolve/main/sentencepiece.bpe.model",
+#         "xlm-roberta-large-finetuned-conll03-english": "https://huggingface.co/xlm-roberta-large-finetuned-conll03-english/resolve/main/sentencepiece.bpe.model",
+#         "xlm-roberta-large-finetuned-conll03-german": "https://huggingface.co/xlm-roberta-large-finetuned-conll03-german/resolve/main/sentencepiece.bpe.model",
+#     }
+# }
+
+# PRETRAINED_POSITIONAL_EMBEDDINGS_SIZES = {
+#     "xlm-roberta-base": 512,
+#     "xlm-roberta-large": 512,
+#     "xlm-roberta-large-finetuned-conll02-dutch": 512,
+#     "xlm-roberta-large-finetuned-conll02-spanish": 512,
+#     "xlm-roberta-large-finetuned-conll03-english": 512,
+#     "xlm-roberta-large-finetuned-conll03-german": 512,
+# }
 
 FAIRSEQ_LANGUAGE_CODES = ["ar_AR", "cs_CZ", "de_DE", "en_XX", "es_XX", "et_EE", "fi_FI", "fr_XX", "gu_IN", "hi_IN", "it_IT", "ja_XX", "kk_KZ", "ko_KR", "lt_LT", "lv_LV", "my_MM", "ne_NP", "nl_XX", "ro_RO", "ru_RU", "si_LK", "tr_TR", "vi_VN", "zh_CN"]  # fmt: skip
 
@@ -57,6 +128,8 @@ class MBartTokenizer(PreTrainedTokenizer):
     vocab_files_names = VOCAB_FILES_NAMES
     model_input_names = ["input_ids", "attention_mask"]
 
+    # what are these? How do they get set?
+    # They are only set by methods set_src_lang_special_tokens() and set_tgt_lang_special_tokens()
     prefix_tokens: List[int] = []
     suffix_tokens: List[int] = []
 
@@ -100,15 +173,25 @@ class MBartTokenizer(PreTrainedTokenizer):
         # The first "real" token "," has position 4 in the original fairseq vocab and position 3 in the spm vocab
         self.fairseq_offset = 1
 
+        # Now starts code specific for MBart
         self.sp_model_size = len(self.sp_model)
         self.lang_code_to_id = {
             code: self.sp_model_size + i + self.fairseq_offset for i, code in enumerate(FAIRSEQ_LANGUAGE_CODES)
         }
         self.id_to_lang_code = {v: k for k, v in self.lang_code_to_id.items()}
+        # make mask token the last one in vocab
         self.fairseq_tokens_to_ids["<mask>"] = len(self.sp_model) + len(self.lang_code_to_id) + self.fairseq_offset
+        # self.fairseq_tokens_to_ids is inherited from base class XLMRobertaTokenizer. 
+        # After updating for mask token, now the content of self.fairseq_tokens_to_ids is:
+        # {"<s>": 0, "<pad>": 1, "</s>": 2, "<unk>": 3, "<mask>": len(self.sp_model) + len(self.lang_code_to_id) + self.fairseq_offset}
+        # All these are special tokens, so no split, no lower case, ...
 
+        # Now add MBart specific lang code tokens to vocab. These will also be treated as special tokens as they are set to self._additional_special_tokens
         self.fairseq_tokens_to_ids.update(self.lang_code_to_id)
         self.fairseq_ids_to_tokens = {v: k for k, v in self.fairseq_tokens_to_ids.items()}
+        # Set attribute self._additional_special_tokens is not as safe as using self.add_special_tokens() ?
+        # Correct. If you are sure that before this, the self._additional_special_tokens attribute is None you can set it directly as below.
+        # If there are already items in self._additional_special_tokens, you must use add_special_tokens() method.
         _additional_special_tokens = list(self.lang_code_to_id.keys())
 
         if additional_special_tokens is not None:
@@ -157,6 +240,7 @@ class MBartTokenizer(PreTrainedTokenizer):
     @property
     def vocab_size(self):
         return len(self.sp_model) + len(self.lang_code_to_id) + self.fairseq_offset + 1  # Plus 1 for the mask token
+        # the base class XLMRobertaTokenizer vocab_size() is len(self.sp_model) + self.fairseq_offset + 1  # Add the <mask> token
 
     @property
     def src_lang(self) -> str:
@@ -191,10 +275,12 @@ class MBartTokenizer(PreTrainedTokenizer):
                 token_ids_0=token_ids_0, token_ids_1=token_ids_1, already_has_special_tokens=True
             )
 
+        # prefix_tokens and suffix_tokens are considered special tokens
         prefix_ones = [1] * len(self.prefix_tokens)
         suffix_ones = [1] * len(self.suffix_tokens)
         if token_ids_1 is None:
             return prefix_ones + ([0] * len(token_ids_0)) + suffix_ones
+        # no sep token between two sequences? See below build_inputs_with_special_tokens(): pair of sequences are not expected; just use as a filler
         return prefix_ones + ([0] * len(token_ids_0)) + ([0] * len(token_ids_1)) + suffix_ones
 
     def build_inputs_with_special_tokens(
@@ -222,6 +308,7 @@ class MBartTokenizer(PreTrainedTokenizer):
         if token_ids_1 is None:
             return self.prefix_tokens + token_ids_0 + self.suffix_tokens
         # We don't expect to process pairs, but leave the pair logic for API consistency
+        # why no <sep> or </s> between two sequences?
         return self.prefix_tokens + token_ids_0 + token_ids_1 + self.suffix_tokens
 
     def create_token_type_ids_from_sequences(
@@ -326,15 +413,53 @@ class MBartTokenizer(PreTrainedTokenizer):
 
     def set_src_lang_special_tokens(self, src_lang) -> None:
         """Reset the special tokens to the source lang setting. No prefix and suffix=[eos, src_lang_code]."""
+        # why no prefix?
         self.cur_lang_code = self.lang_code_to_id[src_lang]
         self.prefix_tokens = []
         self.suffix_tokens = [self.eos_token_id, self.cur_lang_code]
 
     def set_tgt_lang_special_tokens(self, lang: str) -> None:
         """Reset the special tokens to the target language setting. No prefix and suffix=[eos, tgt_lang_code]."""
+        # why no prefix?
+        # In Bart/mBart, shift_tokens_right() moves the last (non-padding) token to the front of decoder input sequence, as 'decoder_start_token'
         self.cur_lang_code = self.lang_code_to_id[lang]
         self.prefix_tokens = []
         self.suffix_tokens = [self.eos_token_id, self.cur_lang_code]
+
+
+
+    # The following is some important methods inherited from XLMBobertaTokenizer
+    # @property
+    # def vocab_size(self):
+    #     return len(self.sp_model) + self.fairseq_offset + 1  # Add the <mask> token
+
+    # def get_vocab(self):
+    #     vocab = {self.convert_ids_to_tokens(i): i for i in range(self.vocab_size)}
+    #     vocab.update(self.added_tokens_encoder)
+    #     return vocab
+
+    # def _tokenize(self, text):
+    #     return self.sp_model.EncodeAsPieces(text)
+
+    # def _convert_token_to_id(self, token):
+    #     """ Converts a token (str) in an id using the vocab. """
+    #     if token in self.fairseq_tokens_to_ids:
+    #         return self.fairseq_tokens_to_ids[token]
+    #     spm_id = self.sp_model.PieceToId(token)
+
+    #     # Need to return unknown token if the SP model returned 0
+    #     return spm_id + self.fairseq_offset if spm_id else self.unk_token_id
+
+    # def _convert_id_to_token(self, index):
+    #     """Converts an index (integer) in a token (str) using the vocab."""
+    #     if index in self.fairseq_ids_to_tokens:
+    #         return self.fairseq_ids_to_tokens[index]
+    #     return self.sp_model.IdToPiece(index - self.fairseq_offset)
+
+    # def convert_tokens_to_string(self, tokens):
+    #     """Converts a sequence of tokens (strings for sub-words) in a single string."""
+    #     out_string = "".join(tokens).replace(SPIECE_UNDERLINE, " ").strip()
+    #     return out_string
 
 
 __all__ = ["MBartTokenizer"]

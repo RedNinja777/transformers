@@ -31,7 +31,16 @@ VOCAB_FILES_NAMES = {
     "merges_file": "merges.txt",
 }
 
+PRETRAINED_VOCAB_FILES_MAP = {
+    "vocab_file": {"Salesforce/ctrl": "https://raw.githubusercontent.com/salesforce/ctrl/master/ctrl-vocab.json"},
+    "merges_file": {"Salesforce/ctrl": "https://raw.githubusercontent.com/salesforce/ctrl/master/ctrl-merges.txt"},
+}
 
+PRETRAINED_POSITIONAL_EMBEDDINGS_SIZES = {
+    "Salesforce/ctrl": 256,
+}
+
+# These are DOMAIN control code (aka style control code) that receive special treatment: every sequence should have its corresponding domain control code added as the first token.
 CONTROL_CODES = {
     "Pregnancy": 168629,
     "Christianity": 7675,
@@ -89,6 +98,31 @@ CONTROL_CODES = {
     "Translation": 26820,
     "multilingual": 128406,
 }
+# All these are already tokens in vocab, the ids correspond to token_id in vocab file.
+# Are these treated as special tokens? That is, they don't get lower cased, never split into smaller tokens?
+# They are NOT added to _additional_special_tokens, which is actually empty for CTRLTokenizer. 
+# But since they are in the vocab, and the way BPE works won't lower case existing vocab or split them. 
+
+# When using CTRL, which is GPT2 like, a decoder only model without encoder, provide a prompt_text. 
+# It's best to have first token of prompt_text to be one of the domain control codes above. 
+# Example usage:
+    # encoded_prompt = tokenizer.encode(prompt_text, add_special_tokens=False)
+    # if not any(encoded_prompt[0] == x for x in tokenizer.control_codes.values()):
+    #     logger.info("WARNING! You are not starting your generation from a control code so you won't get good results")
+
+
+# CTRL is a conditional language model that is always conditioned on a domain control code and possibly other control codes. 
+# During training, a control code are added to the beginning of raw text sequence. 
+# - Is there a <sep> token between control code and actual sequence?
+#   -- seems not. 
+# The way CTRL trained is similar to GPT2, but with extra control code token added. 
+# - Can multiple control codes be used together?
+#   -- Not mixing the above domain control code, which should be one per sequence. 
+#   -- Following domain control code, a URL or query or ... can be added as additional "control code". But they receive no special treatment and tokeized normally. 
+# During decoding, the input to the trained CTRL model is control code, optionally followed by prompt tokens.
+
+
+# since CTRLTokenizer does NOT override build_inputs_with_special_tokens() method, so no special tokens like <bos>, <eos>, <sep> are added.
 
 
 def get_pairs(word):
@@ -105,8 +139,11 @@ def get_pairs(word):
 
     pairs = set(pairs)
     return pairs
+    # returned is a set, each element is a tuple of two chars, representing a bigram.
 
 
+# CTRL uses BPE.
+# BPE is cased, upper and lower cases are different tokens in vocab.
 class CTRLTokenizer(PreTrainedTokenizer):
     """
     Construct a CTRL tokenizer. Based on Byte-Pair-Encoding.
@@ -124,10 +161,14 @@ class CTRLTokenizer(PreTrainedTokenizer):
             token instead.
     """
 
+    # vocab_files_names is for load/save local vocab files
     vocab_files_names = VOCAB_FILES_NAMES
+    # pretrained_vocab_files_map dict is used to locate pretrained vocab files on the web
+    # It's removed in new version
     control_codes = CONTROL_CODES
 
     def __init__(self, vocab_file, merges_file, unk_token="<unk>", **kwargs):
+        # <unk> is in ctrl-vocab.json
         with open(vocab_file, encoding="utf-8") as vocab_handle:
             self.encoder = json.load(vocab_handle)
         self.decoder = {v: k for k, v in self.encoder.items()}
@@ -146,9 +187,12 @@ class CTRLTokenizer(PreTrainedTokenizer):
         return dict(self.encoder, **self.added_tokens_encoder)
 
     def bpe(self, token):
+        # token is whole word to be separated into subwords
         if token in self.cache:
             return self.cache[token]
+        # split each word into a list of chars
         word = tuple(token)
+        # the last char of a word receive special treatment: no longer a single char.
         word = tuple(list(word[:-1]) + [word[-1] + "</w>"])
         pairs = get_pairs(word)
 
@@ -184,7 +228,10 @@ class CTRLTokenizer(PreTrainedTokenizer):
                 break
             else:
                 pairs = get_pairs(word)
+        # word is now a list of subwords
+        # add "@@" at the end of each subword token, and separate subwords by " " as usual.
         word = "@@ ".join(word)
+        # remove trailing "</w>".
         word = word[:-4]
         self.cache[token] = word
         return word
@@ -194,9 +241,12 @@ class CTRLTokenizer(PreTrainedTokenizer):
         split_tokens = []
 
         words = re.findall(r"\S+\n?", text)
+        # split raw string into words (non-whitespace) and newline (if any) which are separated by whitespaces.
 
         for token in words:
+            # token is a whole word
             split_tokens.extend(list(self.bpe(token).split(" ")))
+            # split each whole word into subwords (if possible) by bpe.
         return split_tokens
 
     def _convert_token_to_id(self, token):
@@ -209,6 +259,7 @@ class CTRLTokenizer(PreTrainedTokenizer):
 
     def convert_tokens_to_string(self, tokens):
         """Converts a sequence of tokens (string) in a single string."""
+        # subwords in vocab end with "@@"
         out_string = " ".join(tokens).replace("@@ ", "").strip()
         return out_string
 

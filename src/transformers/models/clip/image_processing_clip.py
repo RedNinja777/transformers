@@ -105,6 +105,7 @@ class CLIPImageProcessor(BaseImageProcessor):
         do_convert_rgb: bool = True,
         **kwargs,
     ) -> None:
+        # After resize will image be square with size, or aspect ratio is kept and short edge is size?
         super().__init__(**kwargs)
         size = size if size is not None else {"shortest_edge": 224}
         size = get_size_dict(size, default_to_square=False)
@@ -285,6 +286,8 @@ class CLIPImageProcessor(BaseImageProcessor):
 
         images = make_list_of_images(images)
 
+        # Check that images has a valid type
+        # supported image types: PIL Image, np.ndarray (used by cv2), torch Tensor
         if not valid_images(images):
             raise ValueError(
                 "Invalid image type. Must be of type PIL.Image.Image, numpy.ndarray, "
@@ -340,9 +343,14 @@ class CLIPImageProcessor(BaseImageProcessor):
             to_channel_dimension_format(image, data_format, input_channel_dim=input_data_format)
             for image in all_images
         ]
+        # images is a list of tensors, representing a batch of images. Each image can be a PIL image, NumPy array or PyTorch tensor. 
+        # In case of a NumPy array/PyTorch tensor, each image should be of shape (C, H, W), where C is a number of channels, H and W are image height and width.
 
+        # return as BatchFeature
         data = {"pixel_values": images}
         return BatchFeature(data=data, tensor_type=return_tensors)
+        # BatchFeature derives from UserDict, which stores k/v pairs in .data. 
+
 
 
 __all__ = ["CLIPImageProcessor"]

@@ -38,6 +38,30 @@ from ...utils import TensorType, filter_out_non_signature_kwargs, logging
 
 logger = logging.get_logger(__name__)
 
+# cv2.imread() read image into np.ndarray (H, W, C)
+# cv2 image.shape is H, W, C; values are [0, 255]. Default color scheme is BGR
+# PIL.Image.shape is also H, W, C; values are also [0, 255]. Default color scheme is RGB.
+
+# To convert from ndarray image format (H, W, C) to PIL image format, use im_pil = Image.fromarray(im_np).
+# To look at values of pixels in PIL Image, use pixels = list(im_pil.getdata())
+# To convert from PIL format to cv2 format, use im_np = np.asarray(im_pil)
+
+# Most torchvision transformations accept both PIL images and tensor images, although some transformations are PIL-only and some are tensor-only. 
+# class torchvision.transforms.ToTensor  Convert a PIL Image or numpy.ndarray to tensor. 
+# Converts a PIL Image or numpy.ndarray (H x W x C) in the range [0, 255] to a torch.FloatTensor of shape (C x H x W) 
+# in the range [0.0, 1.0] if the PIL Image belongs to one of the modes (L, LA, P, I, F, RGB, YCbCr, RGBA, CMYK, 1) or if the numpy.ndarray has dtype = np.uint8
+# In the other cases, tensors are returned without scaling.
+
+# A Tensor Image is a tensor with (C, H, W) shape, where C is the number of channels, H and W are image height and width. 
+# The expected range of the values of a tensor image is implicitely defined by the tensor dtype. 
+# Tensor images with a float dtype are expected to have values in [0, 1). 
+# Tensor images with an integer dtype are expected to have values in [0, MAX_DTYPE] where MAX_DTYPE is the largest value that can be represented in that dtype.
+
+
+# The choice of image size 224 is from AlexNet. It has become common choice of many models but it's not necessarily the best.
+# It's considered not too big or too small.
+
+
 
 class ViTImageProcessor(BaseImageProcessor):
     r"""

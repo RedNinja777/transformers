@@ -25,6 +25,15 @@ from ...utils import logging
 
 logger = logging.get_logger(__name__)
 
+ROBERTA_PRETRAINED_CONFIG_ARCHIVE_MAP = {
+    "FacebookAI/roberta-base": "https://huggingface.co/FacebookAI/roberta-base/resolve/main/config.json",
+    "FacebookAI/roberta-large": "https://huggingface.co/FacebookAI/roberta-large/resolve/main/config.json",
+    "FacebookAI/roberta-large-mnli": "https://huggingface.co/FacebookAI/roberta-large-mnli/resolve/main/config.json",
+    "distilbert/distilroberta-base": "https://huggingface.co/distilbert/distilroberta-base/resolve/main/config.json",
+    "openai-community/roberta-base-openai-detector": "https://huggingface.co/openai-community/roberta-base-openai-detector/resolve/main/config.json",
+    "openai-community/roberta-large-openai-detector": "https://huggingface.co/openai-community/roberta-large-openai-detector/resolve/main/config.json",
+}
+
 
 class RobertaConfig(PretrainedConfig):
     r"""
@@ -136,6 +145,8 @@ class RobertaConfig(PretrainedConfig):
         self.use_cache = use_cache
         self.classifier_dropout = classifier_dropout
 
+        # is_decoder is default to False
+
 
 class RobertaOnnxConfig(OnnxConfig):
     @property
@@ -150,6 +161,30 @@ class RobertaOnnxConfig(OnnxConfig):
                 ("attention_mask", dynamic_axis),
             ]
         )
+
+
+# an example config https://s3.amazonaws.com/models.huggingface.co/bert/roberta-base-config.json
+# {
+#   "architectures": [
+#     "RobertaForMaskedLM"
+#   ],
+#   "attention_probs_dropout_prob": 0.1,
+#   "bos_token_id": 0,
+#   "eos_token_id": 2,
+#   "hidden_act": "gelu",
+#   "hidden_dropout_prob": 0.1,
+#   "hidden_size": 768,  # base=768, large=1024
+#   "initializer_range": 0.02,
+#   "intermediate_size": 3072,
+#   "layer_norm_eps": 1e-05,
+#   "max_position_embeddings": 514,
+#   "model_type": "roberta",
+#   "num_attention_heads": 12,  # base=12, large=16
+#   "num_hidden_layers": 12,  # base=12, large=24
+#   "pad_token_id": 1,
+#   "type_vocab_size": 1,
+#   "vocab_size": 50265
+# }
 
 
 __all__ = ["RobertaConfig", "RobertaOnnxConfig"]

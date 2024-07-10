@@ -118,6 +118,8 @@ def default_logdir() -> str:
 
     current_time = datetime.now().strftime("%b%d_%H-%M-%S")
     return os.path.join("runs", current_time + "_" + socket.gethostname())
+    # socket.gethostname() Return a string containing the hostname of the machine where the Python interpreter is currently executing.
+    # Note: gethostname() doesn’t always return the fully qualified domain name; use getfqdn() for that.
 
 
 def get_int_from_env(env_keys, default):
@@ -214,6 +216,87 @@ def _convert_str_dict(passed_value: dict):
                 passed_value[key] = float(value)
 
     return passed_value
+
+# @dataclasses.dataclass(*, init=True, repr=True, eq=True, order=False, unsafe_hash=False, frozen=False)
+#   - This function is a decorator that is used to add generated special methods to classes, as described below.
+#   - The dataclass() decorator examines the class to find fields. 
+#     !! A field is defined as class variable that has a type annotation. A field can be either normal python syntax, or defined as field() !!
+#   - The order of the fields in all of the generated methods is the order in which they appear in the class definition.
+#   - The dataclass() decorator will add various “dunder” methods to the class, described below. 
+#     If any of the added methods already exist on the class, the behavior depends on the parameter, as documented below. 
+#     The decorator returns the same class that is called on; no new class is created.
+#   - If dataclass() is used just as a simple decorator with no parameters, it acts as if it has the default values documented in this signature. 
+# 
+
+# The parameters to dataclass() are:
+#   - init: If true (the default), a __init__() method will be generated. If the class already defines __init__(), this parameter is ignored.
+#     -- The generated __init__() code will call a method named __post_init__(), if __post_init__() is defined on the class. 
+#     -- If any InitVar fields are defined, they will also be passed to __post_init__() in the order they were defined in the class. 
+#     -- If no __init__() method is generated, then __post_init__() will not automatically be called.
+#   - repr: If true (the default), a __repr__() method will be generated. The generated repr string will have the class name and the name and repr of each field, in the order they are defined in the class. 
+#     If the class already defines __repr__(), this parameter is ignored.
+#   - eq: If true (the default), an __eq__() method will be generated. This method compares the class as if it were a tuple of its fields, in order. Both instances in the comparison must be of the identical type.
+#     If the class already defines __eq__(), this parameter is ignored.
+#   - order: If true (the default is False), __lt__(), __le__(), __gt__(), and __ge__() methods will be generated. These compare the class as if it were a tuple of its fields, in order. 
+#     Both instances in the comparison must be of the identical type. If order is true and eq is false, a ValueError is raised.
+#     If the class already defines any of __lt__(), __le__(), __gt__(), or __ge__(), then TypeError is raised.
+#   - unsafe_hash: If False (the default), a __hash__() method is generated according to how eq and frozen are set.
+#     __hash__() is used by built-in hash(), and when objects are added to hashed collections such as dictionaries and sets. 
+#     Having a __hash__() implies that instances of the class are immutable. 
+#     By default, dataclass() will not implicitly add a __hash__() method unless it is safe to do so. Neither will it add or change an existing explicitly defined __hash__() method. 
+#     Setting the class attribute __hash__ = None has a specific meaning to Python, as described in the __hash__() documentation.
+#     If __hash__() is not explicit defined, or if it is set to None, then dataclass() may add an implicit __hash__() method. 
+#     Although not recommended, you can force dataclass() to create a __hash__() method with unsafe_hash=True. This might be the case if your class is logically immutable but can nonetheless be mutated. This is a specialized use case and should be considered carefully.
+#     Here are the rules governing implicit creation of a __hash__() method. Note that you cannot both have an explicit __hash__() method in your dataclass and set unsafe_hash=True; this will result in a TypeError.
+#     -- If eq and frozen are both true, by default dataclass() will generate a __hash__() method for you. 
+#     -- If eq is true and frozen is false, __hash__() will be set to None, marking it unhashable (which it is, since it is mutable). 
+#     -- If eq is false, __hash__() will be left untouched meaning the __hash__() method of the superclass will be used (if the superclass is object, this means it will fall back to id-based hashing).
+#   - frozen: If true (the default is False), assigning to fields will generate an exception. This emulates read-only frozen instances. 
+
+
+
+# fields may optionally specify a default value, using normal Python syntax:
+# @dataclass
+# class C:
+#     a: int       # 'a' has no default value
+#     b: int = 0   # assign a default value for 'b'
+# In this example, both a and b will be included in the added __init__() method, which will be defined as:
+# def __init__(self, a: int, b: int = 0):
+#     self.a = a
+#     self.b = b
+# TypeError will be raised if a field without a default value follows a field with a default value. 
+# In addition, since b has default value, b is also added to class C as class attribute b = 0. You can access it without any instance of class C, using C.b. But not very useful.
+# But a is not added as class attribute since it does not have default value.
+
+# fields can also be defined by a call to the provided field() function to provide additional information. For example:
+# dataclasses.field(*, default=MISSING, default_factory=MISSING, repr=True, hash=None, init=True, compare=True, metadata=None)
+# @dataclass
+# class C:
+#     mylist: List[int] = field(default_factory=list)
+
+# c = C()
+# c.mylist += [1, 2, 3]
+
+# As shown above, the MISSING value is a sentinel object used to detect if the default and default_factory parameters are provided. 
+# This sentinel is used because None is a valid value for default. 
+# No code should directly use the MISSING value.
+
+# The parameters to field() are:
+#   - default: If provided, this will be the default value for this field. 
+#   - default_factory: If provided, it must be a zero-argument callable that will be called when a default value is needed for this field.  
+#     It is an error to specify both default and default_factory.
+#   - init: If true (the default), this field is included as a parameter to the generated __init__() method.
+#   - repr: If true (the default), this field is included in the string returned by the generated __repr__() method.
+#   - compare: If true (the default), this field is included in the generated equality and comparison methods (__eq__(), __gt__(), et al.).
+#   - hash: This can be a bool or None. If true, this field is included in the generated __hash__() method. If None (the default), use the value of compare: this would normally be the expected behavior. 
+#     A field should be considered in the hash if it’s used for comparisons. Setting this value to anything other than None is discouraged.
+#   - metadata: This can be a mapping/dict or None. None is treated as an empty dict. 
+#     This value is wrapped in MappingProxyType() to make it read-only, and exposed on the Field object. 
+
+
+#  dataclasses.asdict(instance, *, dict_factory=dict) Converts the dataclass instance to a dict (by using the factory function dict_factory). 
+# Each dataclass is converted to a dict of its fields, as name: value pairs. dataclasses, dicts, lists, and tuples are recursed into. 
+
 
 
 # TODO: `TrainingArguments` users rely on it being fully mutable. In the future see if we can narrow this to a few keys: https://github.com/huggingface/transformers/pull/25903
@@ -1042,6 +1125,19 @@ class TrainingArguments:
     )
     seed: int = field(default=42, metadata={"help": "Random seed that will be set at the beginning of training."})
     data_seed: Optional[int] = field(default=None, metadata={"help": "Random seed to be used with data samplers."})
+
+    # Amp (Automatic Mixed Precision) is a tool to enable Tensor Core-accelerated training in only 3 lines of Python.
+    # Commonly-used default modes are chosen by selecting an “optimization level” or opt_level in amp.initialize().
+    # # Allow Amp to perform casts as required by the opt_level
+    #model, optimizer = amp.initialize(model, optimizer, opt_level="O1")
+    # # loss.backward() becomes:
+    #with amp.scale_loss(loss, optimizer) as scaled_loss:
+    #    scaled_loss.backward()
+
+    # Users should NOT manually cast their model or data to .half(), regardless of what opt_level or properties are chosen. 
+    # Amp intends that users start with an existing default (FP32) script, add the three lines corresponding to the Amp API, and begin training with mixed precision. 
+    # Amp can also be disabled, in which case the original script will behave exactly as it used to.
+
     jit_mode_eval: bool = field(
         default=False, metadata={"help": "Whether or not to use PyTorch jit trace for inference"}
     )
@@ -1170,6 +1266,7 @@ class TrainingArguments:
         default=-1,
         metadata={"help": "If >=0, uses the corresponding part of the output as the past state for next step."},
     )
+    # ?? only used in evaluation/prediction ?
 
     run_name: Optional[str] = field(
         default=None,
@@ -1547,6 +1644,8 @@ class TrainingArguments:
     )
 
     def __post_init__(self):
+        # Handle --use_env option in torch.distributed.launch (local_rank not passed as an arg then).
+        # This needs to happen before any call to self.device or self.n_gpu.
         # Parse in args that could be `dict` sent in from the CLI as a string
         for field in _VALID_DICT_FIELDS:
             passed_value = getattr(self, field)
@@ -2128,6 +2227,7 @@ class TrainingArguments:
         """
         The actual batch size for training (may differ from `per_gpu_train_batch_size` in distributed training).
         """
+        # train_batch_size is the total number of examples of one batch (one forward pass) in ONE process which may have multiple threads (like in DataParallel).
         if self.per_gpu_train_batch_size:
             logger.warning(
                 "Using deprecated `--per_gpu_train_batch_size` argument which will be removed in a future "
@@ -2150,6 +2250,33 @@ class TrainingArguments:
         per_device_batch_size = self.per_gpu_eval_batch_size or self.per_device_eval_batch_size
         eval_batch_size = per_device_batch_size * max(1, self.n_gpu)
         return eval_batch_size
+
+
+    # The @property decorator turns the method into a “getter” for a read-only attribute with the same name.
+    # In addition for a method to be used only as a "getter" by the @property decorator, we can set the same named method into a setter and deleter methods. 
+    # class C:
+    #     def __init__(self):
+    #         self._x = None
+    #
+    #     @property
+    #     def x(self):
+    #         """I'm the 'x' property."""
+    #         # This is a "getter" method only.
+    #         return self._x
+    #
+    #     @x.setter
+    #     def x(self, value):
+    #         self._x = value
+    #
+    #     @x.deleter
+    #     def x(self):
+    #         del self._x
+
+
+    # @functools.cached_property(func)
+    # Transform a method of a class into a property whose value is computed once and then cached as a normal attribute for the life of the instance. 
+    # Similar to property(), with the addition of caching. Useful for expensive computed properties of instances that are otherwise effectively immutable.
+
 
     @property
     def ddp_timeout_delta(self) -> timedelta:
@@ -2283,7 +2410,17 @@ class TrainingArguments:
                 self._n_gpu = torch.cuda.device_count()
                 if device.type == "cuda":
                     torch.cuda.set_device(device)
+            # Must do either cuda.set_device() or cuda.device().
+            # Initializes the distributed backend which will take care of synchronizing nodes/GPUs
+            # distributed training. Only for GPU training? No, torch.distributed can work with multi CPUs with backend "mpi", "gloo", "ccl", etc. Then set device = torch.device("cpu")
+            # do either: cuda.set_device() or cuda.device().
+            # torch.cuda.device(args.local_rank)
         return device
+
+        # The torch.device contains a device type ('cpu' or 'cuda') and optional device ordinal for the device type. 
+        # If the device ordinal is not present, this object will always represent the current device for the device type, even after torch.cuda.set_device() is called; 
+        # e.g., a torch.Tensor constructed with device 'cuda' is equivalent to 'cuda:X' where X is the result of torch.cuda.current_device().
+
 
     @property
     def device(self) -> "torch.device":
@@ -2292,6 +2429,7 @@ class TrainingArguments:
         """
         requires_backends(self, ["torch"])
         return self._setup_devices
+        # this way avoids making device (which is an object) part of TrainingArguments.__dict__ 
 
     @property
     def n_gpu(self):
@@ -2358,6 +2496,8 @@ class TrainingArguments:
         elif is_sagemaker_mp_enabled():
             return smp.dp_rank() if not smp.state.cfg.prescaled_batch else smp.rdp_rank()
         return 0
+        # so non-distributed training, i.e., local_rank = -1, will also get process_index = 0.
+
 
     @property
     def local_process_index(self):
@@ -3092,3 +3232,251 @@ class ParallelMode(Enum):
     SAGEMAKER_MODEL_PARALLEL = "sagemaker_model_parallel"
     SAGEMAKER_DATA_PARALLEL = "sagemaker_data_parallel"
     TPU = "tpu"
+
+
+class MyArgumentParserWrapper:
+    def __init__(self):
+        self._args = None  # Keep the populated namespace object returned by parser.parse_args()
+
+    @staticmethod
+    def __parse_args():
+        parser = argparse.ArgumentParser()
+
+        # input related 
+        parser.add_argument("--train_file", default=None, type=str, required=True,
+                            help="Training data (json format) for training. Keys: src and tgt")
+        parser.add_argument("--model_name_or_path", default=None, type=str, required=True,
+                            help=f"Path to pre-trained model or shortcut name selected in the list: {', '.join(BART_PRETRAINED_MODELS)}")
+        parser.add_argument("--config_name_or_path", default=None, type=str,
+                            help="Pretrained config name or path if not the same as model_name")
+        parser.add_argument("--tokenizer_name_or_path", default=None, type=str,
+                            help="Pretrained tokenizer name or path if not the same as model_name")
+        parser.add_argument("--cache_dir", default=None, type=str,
+                            help="Where do you want to store the pre-trained models downloaded")
+        parser.add_argument("--config", type=str,
+                            help="Local config file that overwrites default arguments")
+
+        # data set related
+        parser.add_argument("--is_train_tsv", action='store_true',
+                            help="Whether training data file is tsv format.")
+        parser.add_argument("--cached_train_features_file", default=None, type=str,
+                            help="Cached training features file")
+        parser.add_argument("--lmdb_cache", action='store_true',
+                            help="Use LMDB to cache training features")
+        parser.add_argument("--lmdb_dtype", type=str, default='h', 
+                            help="Data type for cached data type for LMDB")
+
+        parser.add_argument("--n_data_worker", type=int, default=4, help="number of dataloader workers / cpu threads to use during data batch generation")
+        parser.add_argument("--dataloader_drop_last", default=False, action='store_true',)
+
+
+
+        # environment related
+        parser.add_argument("--local_rank", type=int, default=-1,
+                            help="local_rank for distributed training on gpus")
+        parser.add_argument("--no_cuda", action='store_true',
+                            help="Whether not to use CUDA when available")
+        parser.add_argument('--seed', type=int, default=100,
+                            help="random seed for initialization")
+
+        parser.add_argument("--do_train", action='store_true',
+                            help="Whether to run training.")
+        parser.add_argument("--evaluate_during_training", action='store_true',
+                            help="Whether to run eval on the dev set.")
+        parser.add_argument('--do_eval', default=False, action='store_true', required=False, 
+                            help="Run evaluation only without training.")
+        parser.add_argument('--do_test', default=False, action='store_true', required=False, 
+                            help="Run test only without training.")
+
+        # training parameters
+        parser.add_argument("--learning_rate", default=1e-4, type=float,
+                            help="The initial learning rate for Adam.")
+        parser.add_argument("--max_steps", default=-1, type=int,
+                            help="set total number of training steps to perform")
+        parser.add_argument("--num_train_epochs", default=10, type=int,
+                            help="set total number of training epochs to perform (--max_steps has higher priority)")
+        parser.add_argument("--warmup_steps", default=100, type=int,
+                            help="Linear warmup over warmup_steps.")
+        parser.add_argument("--per_device_train_batch_size", default=8, type=int,
+                            help="Batch size per GPU/CPU for training.")
+        parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Number of forward gradient accus before performing a backward/step")
+        parser.add_argument("--max_grad_norm", default=1.0, type=float,
+                            help="Max gradient norm.")
+        parser.add_argument("--weight_decay", default=0.01, type=float,
+                            help="Weight decay if we apply some.")
+        parser.add_argument("--adam_epsilon", default=1e-8, type=float,
+                            help="Epsilon for Adam optimizer.")
+        parser.add_argument('--fp16', action='store_true',
+                            help="Whether to use 16-bit (mixed) precision (through NVIDIA apex) instead of 32-bit")
+        parser.add_argument('--fp16_opt_level', type=str, default='O1',
+                            help="For fp16: Apex AMP optimization level selected in ['O0', 'O1', 'O2', and 'O3']."
+                                "See details at https://nvidia.github.io/apex/amp.html")
+        parser.add_argument("--no_resume_training", action='store_true',
+                            help="Whether not to recover checkpoint in output dir to continue training.")
+        parser.add_argument('--hidden_dropout_prob', type=float, default=0.1,
+                            help="embedding layer and hidden layer dropout probability.")
+        parser.add_argument('--attention_probs_dropout_prob', type=float, default=0.1,
+                            help="attention weights dropout probability.")
+        parser.add_argument("--freeze_encoder", action="store_true")
+        parser.add_argument("--freeze_embeds", action="store_true")
+
+
+        # eval related
+        parser.add_argument("--eval_file", default=None, type=str, required=False,
+                            help="Evaluation data (json format). Keys: src and tgt")
+        parser.add_argument("--is_eval_tsv", action='store_true',
+                            help="Whether evaluation data is tsv format.")
+        parser.add_argument("--cached_eval_features_file", default=None, type=str,
+                            help="Cached evaluation features file")
+        parser.add_argument("--per_device_eval_batch_size", default=8, type=int,
+                            help="Batch size per GPU/CPU for evaluation.")
+        parser.add_argument("--num_eval_examples", type=int, default=None, help="number of eval examples to use")
+        parser.add_argument('--eval_steps', type=int, default=100,
+                            help="Evaluate model every X updates steps.")
+        parser.add_argument("--generation_during_eval", action='store_true',
+                            help="Whether run generagion during evaluation")
+
+
+        # test related
+        parser.add_argument("--test_file", default=None, type=str, required=False,
+                            help="Test data (json format). Keys: src and tgt")
+        parser.add_argument("--is_test_tsv", action='store_true',
+                            help="Whether test data is tsv format.")
+        parser.add_argument("--cached_test_features_file", default=None, type=str,
+                            help="Cached test features file")
+        parser.add_argument("--per_device_test_batch_size", default=2, type=int,
+                            help="Batch size per GPU/CPU for evaluation.")
+        parser.add_argument("--num_test_examples", type=int, default=None, help="number of test examples to use")
+        parser.add_argument("--generation_loss", action='store_true',
+                            help="Whether to calcuate test loss during generation")
+
+
+        # outputs: save models, logging, output metrics
+        parser.add_argument("--output_dir", default="output", type=str, #required=True,
+                            help="The output directory where the model checkpoints and predictions will be written.")
+        parser.add_argument("--logging_dir", default="logging", type=str, #required=True,
+                            help="TensorBoard log dir.")
+        parser.add_argument("--metrics_file", default=None, type=str,
+                            help="The output metrics file name.")
+
+        parser.add_argument('--logging_steps', type=int, default=100,
+                            help="Log every X updates steps.")
+        parser.add_argument('--logging_first_step', action='store_true',
+                            help="Log and eval the first global_step")
+        parser.add_argument('--save_steps', type=int, default=100,
+                            help="Save checkpoint every X updates steps.")
+        parser.add_argument('--save_total_limit', type=int, default=None,
+                            help="Limit the total amount of checkpoints."
+                                "Deletes the older checkpoints in the output_dir. Default is unlimited checkpoints")
+
+        # model specific arguments
+        parser.add_argument("--mode", default="summarization", type=str, required=False,
+                            help="Model mode.")
+        parser.add_argument("--max_source_seq_length", default=464, type=int,
+                            help="The maximum total source sequence length after WordPiece tokenization. Sequences "
+                                "longer than this will be truncated, and sequences shorter than this will be padded.")
+        parser.add_argument("--max_target_seq_length", default=48, type=int,
+                            help="The maximum total target sequence length after WordPiece tokenization. Sequences "
+                                "longer than this will be truncated, and sequences shorter than this will be padded.")
+        parser.add_argument("--special_tokens", default=None, type=str, required=False,
+                            help="Add new special tokens. Use comma to separate.")
+        parser.add_argument('--num_labels', type=int, default=None,
+                            help="number of labels")
+        
+        # distributed training parameters
+        parser.add_argument('--world-size', default=1, type=int,
+                            help='number of distributed processes')
+        parser.add_argument('--dist-url', default='env://', help='url used to set up distributed training')
+
+
+        self.args = parser.parse_args()  
+
+        # parser.parse_args() Return the populated namespace object (default is a new empty Namespace object) that contains attributes from argument strings (default is taken from sys.argv).
+        # Namespace is simply an object subclass with a readable string representation.
+        # Any instance of subclass of object has __dict__ attribute that is a dictionary of all the object's attributes.
+
+
+    def _setup_devices(self):
+        logger.info("PyTorch: setting up devices")
+        if self.args.no_cuda:
+            self.args.device = torch.device("cpu")
+            self.args.n_gpu = 0
+            if self.args.local_rank != -1:
+                # Initializes distributed backend for cpu
+                if self.xpu_backend not in ("mpi", "ccl"):
+                    raise ValueError(
+                        "CPU distributed training backend is not properly set. "
+                        "Please set '--xpu_backend' to either 'mpi' or 'ccl'."
+                    )
+                torch.distributed.init_process_group(backend=self.xpu_backend)
+        elif self.args.local_rank == -1:
+            # Here we don't use torch.distributed.
+            # if n_gpu is > 1 we'll use nn.DataParallel.
+            # If you only want to use a specific subset of GPUs use `CUDA_VISIBLE_DEVICES=0`
+            # Explicitly set CUDA to the first (index 0) CUDA device, otherwise `set_device` will
+            # trigger an error that a device index is missing. Index 0 takes into account the
+            # GPUs available in the environment, so `CUDA_VISIBLE_DEVICES=1,2` with `cuda:0`
+            # will use the first GPU in that env, i.e. GPU#1
+            self.args.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+            # Sometimes the line in the postinit has not been run before we end up here, so just checking we're not at the default value.
+            self.args.n_gpu = torch.cuda.device_count()
+            # can be 0 or number of gpus (> 1 if use nn.DataParallel)
+        else:
+            # Here, we'll use torch.distributed.
+            # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
+            # distributed training. Only for GPU training?
+            torch.distributed.init_process_group(backend="nccl")  # not using parameter rank=self.local_rank ?
+            # Must do the following: cuda.set_device() or cuda.device().
+            # torch.cuda.device(self.args.local_rank)
+            self.args.device = torch.device("cuda", self.args.local_rank)  # equivalent to torch.cuda.device(self.args.local_rank)? works on multiple nodes too? 
+            self.args.n_gpu = 1  # one process uses only one GPU.
+        
+        if self.args.device.type == "cuda":
+            # Must do the following: torch.cuda.set_device()
+            torch.cuda.set_device(self.args.device)
+
+    def prepare(self):
+        self._setup_devices()
+        
+        # Create output dir
+        if is_world_master(self._args):
+            os.makedirs(self._args.output_dir, exist_ok=True)
+            json.dump({k: v if type(v) in [bool, int, float, str, torch.Tensor] else str(v) 
+                            for k, v in vars(self._args).items()}, 
+                    open(os.path.join(self.args.output_dir, 'train_opt.json'), 'w'), sort_keys=True, indent=2)
+
+        # Setup logging
+        logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
+                            datefmt='%m/%d/%Y %H:%M:%S',
+                            level=logging.INFO if self._args.local_rank in [-1, 0] else logging.WARN)
+
+        logger.info("Setting up seed")
+        utils.set_seed(self._args.seed)
+
+        # batch_size per process. same as batch_sizer per node if dist train.
+        self._args.train_batch_size = self._args.per_device_train_batch_size * max(1, self._args.n_gpu)
+        self._args.eval_batch_size = self._args.per_device_eval_batch_size * max(1, self._args.n_gpu)
+
+        logger.warning("Process rank: %s, device: %s, n_gpu: %s, distributed training: %s, 16-bits training: %s",
+                    self._args.local_rank, self._args.device, self._args.n_gpu, bool(self._args.local_rank != -1), self._args.fp16)
+
+        logger.info("Training/evaluation parameters %s", self._args)
+
+        # Before we do anything with models, we want to ensure that we get fp16 execution of torch.einsum if args.fp16 is set.
+        # Otherwise it'll default to "promote" mode, and we'll get fp32 operations. Note that running `--fp16_opt_level="O2"` will
+        # remove the need for this code, but it is still valid.
+        if self._args.fp16:
+            if not is_apex_available():
+                raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use fp16 training.")
+        
+        # Amp (Automatic Mixed Precision) is a tool to enable Tensor Core-accelerated training in only 3 lines of Python.
+        # Commonly-used default modes are chosen by selecting an “optimization level” or opt_level in amp.initialize().
+        # # Allow Amp to perform casts as required by the opt_level
+        #model, optimizer = amp.initialize(model, optimizer, opt_level="O1")
+        # # loss.backward() becomes:
+        #with amp.scale_loss(loss, optimizer) as scaled_loss:
+        #    scaled_loss.backward()
+
+        # Users should not manually cast their model or data to .half(), regardless of what opt_level or properties are chosen. 
+        # Amp intends that users start with an existing default (FP32) script, add the three lines corresponding to the Amp API, and begin training with mixed precision. 
+        # Amp can also be disabled, in which case the original script will behave exactly as it used to.

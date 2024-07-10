@@ -191,8 +191,11 @@ class PretrainedConfig(PushToHubMixin):
             The type of loss that the model should use. It should be in `LOSS_MAPPING`'s keys, otherwise the loss will
             be automatically infered from the model architecture.
     """
+    # this pretrained_config_archive_map is deprecated. 
+    # pretrained_config_archive_map: Dict[str, str] = {}  # class attribute place holder for derived configuration classes. type: Dict[str, str] 
 
     model_type: str = ""
+    # use of model_type: it's saved in the config JSON file. used to recreate the correct object in :class:`~transformers.AutoConfig`.
     base_config_key: str = ""
     sub_configs: Dict[str, "PretrainedConfig"] = {}
     is_composition: bool = False
@@ -247,6 +250,7 @@ class PretrainedConfig(PushToHubMixin):
         if self.id2label is not None:
             if not isinstance(self.id2label, dict):
                 raise ValueError("Argument id2label should be a dictionary.")
+            # id2label is Dict[int, str]`: A map from index (for instance prediction index, or target index) to label names.
             num_labels = kwargs.pop("num_labels", None)
             if num_labels is not None and len(self.id2label) != num_labels:
                 logger.warning(
@@ -256,7 +260,10 @@ class PretrainedConfig(PushToHubMixin):
             self.id2label = {int(key): value for key, value in self.id2label.items()}
             # Keys are always strings in JSON so convert ids to int here.
         else:
+            # calls self.num_labels() property setter
             self.num_labels = kwargs.pop("num_labels", 2)
+            # The property setter creates self.id2label as {i: f"LABEL_{i}"} and self.label2id
+		# .values(), .keys() of a Dict are lists and are in correct order.
 
         if self.torch_dtype is not None and isinstance(self.torch_dtype, str):
             # we will start using self.torch_dtype in v5, but to be consistent with
@@ -268,6 +275,8 @@ class PretrainedConfig(PushToHubMixin):
 
         # Tokenizer arguments TODO: eventually tokenizer and models should share the same config
         self.tokenizer_class = kwargs.pop("tokenizer_class", None)
+        # vocab_size is an important entry of any config.
+        ## tokens shouldn't be part of a config (which is about model structure, and possible training params, data, etc.), right?
         self.prefix = kwargs.pop("prefix", None)
         self.bos_token_id = kwargs.pop("bos_token_id", None)
         self.pad_token_id = kwargs.pop("pad_token_id", None)
@@ -316,9 +325,11 @@ class PretrainedConfig(PushToHubMixin):
             )
 
         # Additional attributes without default values
+        # set or update attributes based on kwargs
         for key, value in kwargs.items():
             try:
                 setattr(self, key, value)
+                # The key may be name of an existing attribute (update) or a new attribute (set). Equivalent to self.key = value
             except AttributeError as err:
                 logger.error(f"Can't set {key} with value {value} for {self}")
                 raise err
@@ -415,6 +426,7 @@ class PretrainedConfig(PushToHubMixin):
 
         # If we save using the predefined names, we can load using `from_pretrained`
         output_config_file = os.path.join(save_directory, CONFIG_NAME)
+        # CONFIG_NAME defined in .file_utils.py = "config.json"
 
         self.to_json_file(output_config_file, use_diff=True)
         logger.info(f"Configuration saved in {output_config_file}")
@@ -475,6 +487,8 @@ class PretrainedConfig(PushToHubMixin):
 
                 - a string, the *model id* of a pretrained model configuration hosted inside a model repo on
                   huggingface.co.
+                  Valid model ids can be located at the root-level, like `bert-base-uncased`, or
+                  namespaced under a user or organization name, like `dbmdz/bert-base-german-cased`.
                 - a path to a *directory* containing a configuration file saved using the
                   [`~PretrainedConfig.save_pretrained`] method, e.g., `./my_model_directory/`.
                 - a path or url to a saved configuration JSON *file*, e.g., `./my_model_directory/configuration.json`.
@@ -548,6 +562,8 @@ class PretrainedConfig(PushToHubMixin):
 
         cls._set_token_in_kwargs(kwargs, token)
 
+        # config_dict, a json/dict instance, is built from config file pretrained_model_name_or_path, either downloaded public pretrained, or a local file.
+        # the returned kwargs are (almost) pass-through of argument kwargs, with some parameters related to downloading config file removed.
         config_dict, kwargs = cls.get_config_dict(pretrained_model_name_or_path, **kwargs)
         if cls.base_config_key and cls.base_config_key in config_dict:
             config_dict = config_dict[cls.base_config_key]
@@ -567,6 +583,9 @@ class PretrainedConfig(PushToHubMixin):
                 )
 
         return cls.from_dict(config_dict, **kwargs)
+        # call factory method (a class/static method) to create instance, which in turns call __init__(). 
+        # The config object is constructed first with settings in config_dict.
+        # Then some attributes are updated with values in kwargs.
 
     @classmethod
     def get_config_dict(
@@ -627,6 +646,8 @@ class PretrainedConfig(PushToHubMixin):
                 "The argument `trust_remote_code` is to be used with Auto classes. It has no effect here and is"
                 " ignored."
             )
+        # remove some kwargs that are only relevant to download config file from url. 
+        # all other kwargs are pssed through.
 
         user_agent = {"file_type": "config", "from_auto_class": from_auto_class}
         if from_pipeline is not None:
@@ -634,19 +655,24 @@ class PretrainedConfig(PushToHubMixin):
 
         pretrained_model_name_or_path = str(pretrained_model_name_or_path)
 
+        # if given local dir only, use default file name CONFIG_NAME to locate in the local dir
         is_local = os.path.isdir(pretrained_model_name_or_path)
         if os.path.isfile(os.path.join(subfolder, pretrained_model_name_or_path)):
             # Special case when pretrained_model_name_or_path is a local file
+            # when to use subfolder?
             resolved_config_file = pretrained_model_name_or_path
             is_local = True
         elif is_remote_url(pretrained_model_name_or_path):
             configuration_file = pretrained_model_name_or_path if gguf_file is None else gguf_file
             resolved_config_file = download_url(pretrained_model_name_or_path)
         else:
+            # pretrained_model_name_or_path is a short model name such as bert, roberta, etc., or a local folder name
+            # will be mapped to a url on huggingface. It's like previously config_file = pretrained_config_archive_map[pretrained_model_name_or_path].
             configuration_file = kwargs.pop("_configuration_file", CONFIG_NAME) if gguf_file is None else gguf_file
 
             try:
                 # Load from local folder or from cache or download from model Hub and cache
+                # return a FULL path and filename to the config file on local machine, either previously cached in cache_dir or newly downloaded. 
                 resolved_config_file = cached_file(
                     pretrained_model_name_or_path,
                     configuration_file,
@@ -676,8 +702,11 @@ class PretrainedConfig(PushToHubMixin):
                     f" name. Otherwise, make sure '{pretrained_model_name_or_path}' is the correct path to a directory"
                     f" containing a {configuration_file} file"
                 )
+            # resolved_config_file should be a local json file, either a local dir or file, or newly downloaded, or previously downloaded and cached.
+
 
         try:
+            # Load config json file into config json object.
             if gguf_file:
                 config_dict = load_gguf_checkpoint(resolved_config_file, return_tensors=False)["config"]
             else:
@@ -737,12 +766,17 @@ class PretrainedConfig(PushToHubMixin):
         # We remove it from kwargs so that it does not appear in `return_unused_kwargs`.
         config_dict["attn_implementation"] = kwargs.pop("attn_implementation", None)
 
+        # !! The actual instance creation!! 
+        # call constructor to create an instance of this class, using the config_dict loaded from json config file.
         config = cls(**config_dict)
 
         if hasattr(config, "pruned_heads"):
             config.pruned_heads = {int(key): value for key, value in config.pruned_heads.items()}
+            # ? pruned_heads should be a dict of {layer_id: list of head ids to prune}
 
         # Update config with kwargs if needed
+        # Update the config object loaded from a config json file with values in arguments **kwargs.
+        # ! only update values for those keys already in config object! Not adding any new keys!
         if "num_labels" in kwargs and "id2label" in kwargs:
             num_labels = kwargs["num_labels"]
             id2label = kwargs["id2label"] if kwargs["id2label"] is not None else []
@@ -755,6 +789,7 @@ class PretrainedConfig(PushToHubMixin):
         to_remove = []
         for key, value in kwargs.items():
             if hasattr(config, key):
+                # so the constructor (__init__) should assign ALL the instance attributes, even if None.
                 current_attr = getattr(config, key)
                 # To authorize passing a custom subconfig as kwarg in models that have nested configs.
                 if isinstance(current_attr, PretrainedConfig) and isinstance(value, dict):
@@ -762,10 +797,12 @@ class PretrainedConfig(PushToHubMixin):
                 setattr(config, key, value)
                 if key != "torch_dtype":
                     to_remove.append(key)
+        # general tip: use a to_remove list to avoid modifying the container while iterating it. Remove later.
         for key in to_remove:
             kwargs.pop(key, None)
 
         logger.info(f"Model config {config}")
+        # logger.info("Model config %s", str(config))  # str() will call __repr__()
         if return_unused_kwargs:
             return config, kwargs
         else:
@@ -784,6 +821,7 @@ class PretrainedConfig(PushToHubMixin):
             [`PretrainedConfig`]: The configuration object instantiated from that JSON file.
 
         """
+        # factory method to create config object purely from config json file, without passing any values to update.
         config_dict = cls._dict_from_json_file(json_file)
         return cls(**config_dict)
 
@@ -792,9 +830,32 @@ class PretrainedConfig(PushToHubMixin):
         with open(json_file, "r", encoding="utf-8") as reader:
             text = reader.read()
         return json.loads(text)
+        # f.read() reads the file as an individual string, and so allows relatively easy file-wide manipulations, such as a file-wide regex search or substitution.
+        # call f.read(size), which reads some quantity of data and returns it as a string (in text mode) or bytes object (in binary mode). 
+        # size is an optional numeric argument. When size is omitted or negative, the entire contents of the file will be read and returned; 
+        # at most size characters (in text mode) or size bytes (in binary mode) are read and returned. 
+        # If the end of the file has been reached, f.read() will return an empty string ('').
+        # Note that '\n' is preserved in the returned value of f.read().
+
+        # f.readline() reads a single line of the file, allowing the user to parse a single line without necessarily reading the entire file. 
+        # f.readline() reads a single line from the file; a newline character (\n) is left at the end of the string, 
+        # and is only omitted on the last line of the file if the file doesn't end in a newline. 
+        # This makes the return value unambiguous; 
+        # if f.readline() returns an empty string, the end of the file has been reached, 
+        # while a blank line is represented by '\n', a string containing only a single newline.
+
+        # If you want to read all the lines of a file in a list you can also use list(f) or f.readlines().
+
+        # Using the syntax for line in f: allows the user to iterate over the file line by line.
+
+        # f.write(string) writes the contents of string to the file, returning the number of characters written.
+        # Note it's NOT writeline. 
+        # To indicate this is the whole line, you need to add '\n' to the end of the string explicitly.
+
 
     def __eq__(self, other):
         return isinstance(other, PretrainedConfig) and (self.__dict__ == other.__dict__)
+        # two dict are equal if and only if they have the same (key, value) pairs (regardless of ordering). 
 
     def __repr__(self):
         return f"{self.__class__.__name__} {self.to_json_string()}"
@@ -814,11 +875,14 @@ class PretrainedConfig(PushToHubMixin):
         config_dict = self.to_dict()
 
         # get the default config dict
+        # default config dict is defined in __init__() without no arguments. 
+        # all default values are in the body of __init__()
         default_config_dict = PretrainedConfig().to_dict()
 
         # get class specific config dict
         class_config_dict = self.__class__().to_dict() if not self.is_composition else {}
 
+        # use a new dict (to be returned) to keep only settings different from default config.
         serializable_config_dict = {}
 
         # only serialize values that differ from the default config
@@ -871,7 +935,10 @@ class PretrainedConfig(PushToHubMixin):
             `Dict[str, Any]`: Dictionary of all the attributes that make up this configuration instance.
         """
         output = copy.deepcopy(self.__dict__)
+        # self.__dict__ is a dict of all attributes of object self. 
+        # Does it include class attributes? No. Class attributes are in self.__class__.__dict__
         if hasattr(self.__class__, "model_type"):
+            # check class attribute
             output["model_type"] = self.__class__.model_type
         if "_auto_class" in output:
             del output["_auto_class"]

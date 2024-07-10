@@ -155,10 +155,22 @@ def eager_attention_forward(module, query, key, value, attention_mask, head_mask
 
 
 class GPT2Attention(nn.Module):
+    # this module corresponds to BertSelfAttention, but can use past sequence in self attention computation.
     def __init__(self, config, is_cross_attention=False, layer_idx=None):
         super().__init__()
         self.config = config
         max_positions = config.max_position_embeddings
+        # Dimensionality of the causal mask (the max allowed sequence length, which is 1024 for GPT2, 512 for BERT)
+
+        # buffer is module's persistent state that is not a model parameter to be trained. 
+        # register_buffer Adds a persistent state (buffer is a tensor) to the module.  
+        # This is typically used to register a buffer that should not to be considered a model parameter. 
+        # Buffers can be accessed as attributes using given names.
+        # One reason to register a tensor as a buffer is to be able to serialize the model and restore all internal states, including parameters and buffers. 
+        # Another one is that all buffers and parameters will be pushed to the device, if called on the parent model. 
+
+        # torch.tril returns the lower triangular part of the matrix; by default include diagnal
+        # this "bias" is actually a causal mask matrix of max possible length that the model can handle. not necessarily the whole mask is used in an actual model.
         self.register_buffer(
             "bias",
             torch.tril(torch.ones((max_positions, max_positions), dtype=torch.bool)).view(
@@ -168,6 +180,7 @@ class GPT2Attention(nn.Module):
         )
         self.register_buffer("masked_bias", torch.tensor(-1e4), persistent=False)
 
+        # in Attention: n_state=768 (nx=n_embd)
         self.embed_dim = config.hidden_size
         self.num_heads = config.num_attention_heads
         self.head_dim = self.embed_dim // self.num_heads
@@ -191,6 +204,9 @@ class GPT2Attention(nn.Module):
             self.q_attn = Conv1D(self.embed_dim, self.embed_dim)
         else:
             self.c_attn = Conv1D(3 * self.embed_dim, self.embed_dim)
+            # Linear layer with bias, from nx to n_state * 3.  what is n_state * 3 for? To concatenate query, key, value, 3 hidden vectors.
+        # this c_attn layer is equivalent to BERT attention's query, key, value 3 LinearLayers combined.
+        # Linear layer with bias, add some changes to the self attention output
         self.c_proj = Conv1D(self.embed_dim, self.embed_dim)
 
         self.attn_dropout = nn.Dropout(config.attn_pdrop)
@@ -200,8 +216,10 @@ class GPT2Attention(nn.Module):
         self.pruned_heads = set()
 
     def prune_heads(self, heads):
+        # heads is list of head indices that to be pruned.
         if len(heads) == 0:
             return
+        # mask = torch.ones(self.n_head, self.split_size // self.n_head)  # head mask shape before expanding and broadcast (n_head, size_per_head)
         heads, index = find_pruneable_heads_and_indices(heads, self.num_heads, self.head_dim, self.pruned_heads)
         index_attn = torch.cat([index, index + self.split_size, index + (2 * self.split_size)])
 
@@ -210,9 +228,63 @@ class GPT2Attention(nn.Module):
         self.c_proj = prune_conv1d_layer(self.c_proj, index, dim=0)
 
         # Update hyper params
+        # hidden vector size after head pruning
         self.split_size = (self.split_size // self.num_heads) * (self.num_heads - len(heads))
+        # remaining number of heads after pruning
         self.num_heads = self.num_heads - len(heads)
         self.pruned_heads = self.pruned_heads.union(heads)
+
+    # This method is removed in new version
+    def _attn(self, query, key, value, attention_mask=None, head_mask=None):
+        # due to possibility of past sequence used in k and v, q is possible to have a different seq_len.
+        # [batch_size, num_heads, q_seq_len, k_seq_len]
+        attn_weights = torch.matmul(query, key.transpose(-1, -2))
+
+        if self.scale_attn_weights:
+            attn_weights = attn_weights / torch.full(
+                [], value.size(-1) ** 0.5, dtype=attn_weights.dtype, device=attn_weights.device
+            )
+
+        # Layer-wise attention scaling
+        if self.scale_attn_by_inverse_layer_idx:
+            attn_weights = attn_weights / float(self.layer_idx + 1)
+
+        if not self.is_cross_attention:
+            # if only "normal" attention layer implements causal mask
+            # self.bias is actually causal mask, defined in __init__(); [1, 1, max_seq_len, max_seq_len]. 
+            # k_seq_len = past_key_seq_len + input_key_seq_len
+            query_length, key_length = query.size(-2), key.size(-2)
+            causal_mask = self.bias[:, :, key_length - query_length : key_length, :key_length]
+            # this mask is causal mask attention. The first query token position, only has access to the positions in k sequence [0, ns - nd]
+            # query has full access to entire past (ns - nd) positions, but only access to preceding tokens in the input/query sequence (including self)
+            mask_value = torch.finfo(attn_weights.dtype).min
+            # Need to be a tensor, otherwise we get error: `RuntimeError: expected scalar type float but found double`.
+            # Need to be on the same device, otherwise `RuntimeError: ..., x and y to be on the same device`
+            mask_value = torch.full([], mask_value, dtype=attn_weights.dtype, device=attn_weights.device)
+            attn_weights = torch.where(causal_mask, attn_weights.to(attn_weights.dtype), mask_value)
+            # for values in causual mask that are 0, replace computed attention values in w matrix by -inf
+
+        if attention_mask is not None:
+            # Apply the attention mask
+            # attention mask is padding mask. 
+            # attention_mask dimension [batch_size, num_heads, q_seq_len, k_seq_len]. k_seq_len = past_key_seq_len + input_key_seq_len
+            attn_weights = attn_weights + attention_mask
+
+        attn_weights = nn.functional.softmax(attn_weights, dim=-1)
+
+        # Downcast (if necessary) back to V's dtype (if in mixed-precision) -- No-Op otherwise
+        attn_weights = attn_weights.type(value.dtype)
+        attn_weights = self.attn_dropout(attn_weights)
+        # [batch_size, num_heads, q_seq_len, k_seq_len], attention weight/alignment
+
+        # Mask heads if we want to
+        if head_mask is not None:
+            attn_weights = attn_weights * head_mask
+
+        # a list, the only element is tensor [batch_size, num_heads, q_seq_len, head_size]
+        attn_output = torch.matmul(attn_weights, value)
+
+        return attn_output, attn_weights
 
     def _upcast_and_reordered_attn(self, query, key, value, attention_mask=None, head_mask=None):
         # Use `torch.baddbmm` (a bit more efficient w/ alpha param for scaling -- from Megatron-LM)
@@ -267,6 +339,25 @@ class GPT2Attention(nn.Module):
 
         return attn_output, attn_weights
 
+    # The following two methods are removed in new version
+    def _split_heads(self, tensor, num_heads, attn_head_size):
+        """
+        Splits hidden_size dim into attn_head_size and num_heads
+        """
+        new_shape = tensor.size()[:-1] + (num_heads, attn_head_size)
+        tensor = tensor.view(new_shape)
+        return tensor.permute(0, 2, 1, 3)  # (batch, head, seq_length, head_features)
+
+    def _merge_heads(self, tensor, num_heads, attn_head_size):
+        """
+        Merges attn_head_size dim and num_attn_heads dim into hidden_size
+        """
+        tensor = tensor.permute(0, 2, 1, 3).contiguous()
+        new_shape = tensor.size()[:-2] + (num_heads * attn_head_size,)
+        return tensor.view(new_shape)
+        # shape (batch_size, seq_length, hidden_size)
+
+
     def forward(
         self,
         hidden_states: Optional[Tuple[torch.FloatTensor]],
@@ -279,6 +370,7 @@ class GPT2Attention(nn.Module):
         output_attentions: Optional[bool] = False,
         **kwargs,
     ) -> Tuple[Union[torch.Tensor, Tuple[torch.Tensor]], ...]:
+        # x is input seq embedding, including word embedding, position embedding and token type embedding; dimension is [batch_size, seq_len, hidden_size]
         if encoder_hidden_states is not None:
             if not hasattr(self, "q_attn"):
                 raise ValueError(
@@ -291,6 +383,15 @@ class GPT2Attention(nn.Module):
             attention_mask = encoder_attention_mask
         else:
             query_states, key_states, value_states = self.c_attn(hidden_states).split(self.split_size, dim=2)
+            # attention_mask is padding mask for hidden_states
+            # Linear layer with bias, from hidden_size to n_state * 3.  what is n_state * 3 for?  To concatenate query, key, value, 3 hidden vectors
+            # split tensor into chunks of tensors of specified size along dim.
+
+        # query = self._split_heads(query, self.num_heads, self.head_dim)
+        ## [batch_size, num_heads, head_size, key_seq_len]
+        # key = self._split_heads(key, self.num_heads, self.head_dim)
+        ## [batch_size, num_heads, value_seq_len, head_size]
+        # value = self._split_heads(value, self.num_heads, self.head_dim)
 
         shape_q = (*query_states.shape[:-1], -1, self.head_dim)
         shape_kv = (*key_states.shape[:-1], -1, self.head_dim)
@@ -300,14 +401,28 @@ class GPT2Attention(nn.Module):
         value_states = value_states.view(shape_kv).transpose(1, 2)
 
         if layer_past is not None:
+            # layer_past is precomputed CURRENT layer's output hidden vectors of past key and value sequences. Past sequence includes prompt for generation which is the original input_ids?
+            # first entry is past key sequence without merging heads, 
+            # second entry is past value sequence without merging heads.
             past_key, past_value = layer_past
+            # transpose back cf below
             key_states = torch.cat((past_key, key_states), dim=-2)
             value_states = torch.cat((past_value, value_states), dim=-2)
+        # now key and value sequences are concatenated include past key/value sequence, and current input key/value sequence from input x (which is query sequence).
+        # so key and value is the entire sequence if hidden states, including past and current input x
+        # query is only the hidden states of current input x
 
         if use_cache is True:
+            # transpose to have same shapes
             present = (key_states, value_states)
+            # present include past and current input key and value sequences, [batch_size, num_heads, past_seq_len + input_x_seq_len, head_size]  !!
         else:
             present = None
+        # present is concatenated past and current key/value sequences for current input x, if use_cache is True.
+        # where will present be used? In GPT2Model.forward()
+
+        # now key and value sequences include past key and value sequences, if layer_past is not None
+        # query only has input_seq_len, which only comes from input sequence x
 
         is_cross_attention = encoder_hidden_states is not None
         is_causal = attention_mask is None and query_states.shape[-2] > 1 and not is_cross_attention
@@ -353,13 +468,21 @@ class GPT2Attention(nn.Module):
             outputs += (attn_weights,)
 
         return outputs  # a, present, (attentions)
+        # present include key and value sequences of entire past and current input_ids's hidden states (not output hidden states!).
+        # present will become past for next input token's Attention computation.
 
 
 class GPT2MLP(nn.Module):
     def __init__(self, intermediate_size, config):
+        # in MLP: n_state=3072 (4 * n_embd)
+        # this MLP layer corresponds to BertIntermediate layer 
+        # n_state=3072 (4 * n_embd), intermediate hidden size. n_embd is embedding_size, which is equal to hidden_size
         super().__init__()
+        # embedding_size, which is equal to hidden_size
         embed_dim = config.hidden_size
+        # fully connected Linear layer with bias, from nx to n_state. Weight matrix shape (nx, n_state)
         self.c_fc = Conv1D(intermediate_size, embed_dim)
+        # from intermediate n_state to nx. Weight matrix shape (n_state, nx)
         self.c_proj = Conv1D(embed_dim, intermediate_size)
         self.act = ACT2FN[config.activation_function]
         self.dropout = nn.Dropout(config.resid_pdrop)
@@ -373,6 +496,10 @@ class GPT2MLP(nn.Module):
 
 
 class GPT2Block(nn.Module):
+    # Represents one transformer layer. 
+    # input seq of hidden states go through LayerNorm, Attention, skip link, LayerNorm, MLP, skip link. 
+
+    # this module corresponds to BertLayer
     def __init__(self, config, layer_idx=None):
         super().__init__()
         hidden_size = config.hidden_size
@@ -387,6 +514,7 @@ class GPT2Block(nn.Module):
             self.ln_cross_attn = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
 
         self.mlp = GPT2MLP(inner_dim, config)
+        # after self attention, intermediate hidden size is enlarged to 4 * nx temporarily, nonlinear activation, and then back to hidden size.
 
     def forward(
         self,
@@ -433,6 +561,7 @@ class GPT2Block(nn.Module):
             )
             attn_output = cross_attn_outputs[0]
             # residual connection
+            # skip link from input to Attention output
             hidden_states = residual + attn_output
             outputs = outputs + cross_attn_outputs[2:]  # add cross attentions if we output attention weights
 
@@ -440,6 +569,7 @@ class GPT2Block(nn.Module):
         hidden_states = self.ln_2(hidden_states)
         feed_forward_hidden_states = self.mlp(hidden_states)
         # residual connection
+        # skip link from Attention output (which becomes MLP input) to MLP output
         hidden_states = residual + feed_forward_hidden_states
 
         if use_cache:
@@ -458,6 +588,7 @@ class GPT2PreTrainedModel(PreTrainedModel):
 
     config_class = GPT2Config
     load_tf_weights = load_tf_weights_in_gpt2
+    # A class attribute that is used in base class PreTrainedModel. why not call it gpt2?
     base_model_prefix = "transformer"
     is_parallelizable = True
     supports_gradient_checkpointing = True
@@ -478,6 +609,7 @@ class GPT2PreTrainedModel(PreTrainedModel):
             if module.bias is not None:
                 module.bias.data.zero_()
         elif isinstance(module, nn.Embedding):
+            # nn.Embedding module has no bias parameters.
             module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
@@ -686,12 +818,20 @@ class GPT2Model(GPT2PreTrainedModel):
 
         self.embed_dim = config.hidden_size
 
+        # word token embedding. nn.Embedding has no bias
         self.wte = nn.Embedding(config.vocab_size, self.embed_dim)
+        # word position embedding. config.n_positions is the max seq length the model can handle
         self.wpe = nn.Embedding(config.max_position_embeddings, self.embed_dim)
 
         self.drop = nn.Dropout(config.embd_pdrop)
         self.h = nn.ModuleList([GPT2Block(config, layer_idx=i) for i in range(config.num_hidden_layers)])
+        # use max possible length? pad all the way? No, only part of the mask matrix is used.
+        ## all transformer layers (which are objects of Block) have different parameters.
+        # self.h is stacked transformer layers
+
         self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
+
+        ## inherite base_model_prefix="transformer" but does not define self.transformer, because this module GPT2Model is the base model.
 
         # Model parallel
         self.model_parallel = False
@@ -781,6 +921,26 @@ class GPT2Model(GPT2PreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, BaseModelOutputWithPastAndCrossAttentions]:
+
+        # input_ids has shape (batch_size, input_ids_length). input_ids_length = sequence_length if argument `past`/`past_key_values` is None else 1
+        # !! If `past` is not None, only the last token of `input_ids` have to be model input!!
+
+        # past is a list of tensors; the length of the list is the number of transformer block layers. Each item has shape (2, batch_size, num_heads, past_seq_len, head_size).
+        # The first dimension is length 2, 0 for past key sequence, 1 for past value sequence.
+        # It contains previously computed hidden-states (key and values in the attention blocks) as computed by the model. 
+        # It can be used to speed up sequential decoding. 
+        # !! The token ids which have their past given to this model should not be passed as input ids as they have already been computed earlier!!
+
+        # Using past is only useful in decoding, which calls this forward() multiple times, once for each token. It can save re-computation of already computed tokens.
+        # This is because during decoding, model parameters are not updated, and same input will generate same output hidden vectors.
+
+        # In training, this forward() is called only once and all tokens are computed at once. So past argument in training can be set to None. Or set past to encoder sequence. 
+        # past is NOT used in training, because model parameters are constantly updated, the same input is passed through different parameters and produce different output hidden vectors.
+
+        #################################################################################################################################
+        ## Note: past is NOT updated during this forward function, because it was computed previously.
+        ## The output "presents" is a list of all layers of hidden states of keys and values that include entire old past and current input!!
+        #################################################################################################################################
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -800,6 +960,7 @@ class GPT2Model(GPT2PreTrainedModel):
             batch_size = inputs_embeds.shape[0]
         else:
             raise ValueError("You have to specify either input_ids or inputs_embeds")
+        # input_shape is [batch_size, updated_input_seq_len]. Note that updated_input_seq_len is 1 if past is used.
 
         device = input_ids.device if input_ids is not None else inputs_embeds.device
 
@@ -809,11 +970,17 @@ class GPT2Model(GPT2PreTrainedModel):
         if past_key_values is None:
             past_length = 0
             past_key_values = tuple([None] * len(self.h))
+            # set past to None for all layers of transformer Block.
         else:
             past_length = past_key_values[0][0].size(-2)
+        # past_key_values is a list of length num_layers. Each entry has shape [2, batch_size, num_heads, past_seq_length, head_size]
+
+        # Note position_ids has not been cut to the last token in the input sequence, even if past is used. why??
+
         if position_ids is None:
             position_ids = torch.arange(past_length, input_shape[-1] + past_length, dtype=torch.long, device=device)
             position_ids = position_ids.unsqueeze(0)
+            # [batch_size, input_seq_len], but first pos_id is past_length which is 0 if past is None
 
         if inputs_embeds is None:
             inputs_embeds = self.wte(input_ids)
@@ -821,6 +988,8 @@ class GPT2Model(GPT2PreTrainedModel):
         hidden_states = inputs_embeds + position_embeds
 
         # Attention mask.
+        # GPT2Attention mask.
+        # For masking padding tokens. 1 for actual tokens (not masking), 0 for padding tokens (masking).
         _use_sdpa = self._attn_implementation == "sdpa" and output_attentions is False and head_mask is None
         attention_mask = attention_mask.view(batch_size, -1) if attention_mask is not None else None
         if self._attn_implementation == "flash_attention_2":
@@ -848,6 +1017,7 @@ class GPT2Model(GPT2PreTrainedModel):
                 # effectively the same as removing these entirely.
                 attention_mask = attention_mask.to(dtype=self.dtype)  # fp16 compatibility
                 attention_mask = (1.0 - attention_mask) * torch.finfo(self.dtype).min
+                # attention_mask is only padding mask.
 
         # If a 2D or 3D attention mask is provided for the cross-attention
         # we need to make broadcastable to [batch_size, num_heads, seq_length, seq_length]
@@ -872,12 +1042,15 @@ class GPT2Model(GPT2PreTrainedModel):
         head_mask = self.get_head_mask(head_mask, self.config.n_layer)
 
         if token_type_ids is not None:
+            # token_type_id is 0 or 1.
             token_type_embeds = self.wte(token_type_ids)
             hidden_states = hidden_states + token_type_embeds
 
         hidden_states = self.drop(hidden_states)
+        # now hidden_states is output of embedding and input to the first Transformer layer
 
         output_shape = (-1,) + input_shape[1:] + (hidden_states.size(-1),)
+        # output shape is [batch_size, input_seq_len, hidden_size]
 
         if self.gradient_checkpointing and self.training:
             if use_cache:
@@ -886,12 +1059,15 @@ class GPT2Model(GPT2PreTrainedModel):
                 )
                 use_cache = False
 
+        # presents will become past for next call in generation. only used in generation if use_cache.
         presents = () if use_cache else None
         all_self_attentions = () if output_attentions else None
         all_cross_attentions = () if output_attentions and self.config.add_cross_attention else None
         all_hidden_states = () if output_hidden_states else None
         for i in range(len(self.h)):
             block, layer_past = self.h[i], past_key_values[i]
+            # what happens when zip a list with None? Error because both must be iterable. But here past_key_values is never None; it may be a list of None.
+
             # Model parallel
             if self.model_parallel:
                 torch.cuda.set_device(hidden_states.device)
@@ -931,6 +1107,8 @@ class GPT2Model(GPT2PreTrainedModel):
                 )
 
             hidden_states = outputs[0]
+            # outputs[0] is last transformer layer's hidden states
+            # present is hidden states of all layers, including both key and value sequences, which are concatenation of past sequence and current input sequence.
             if use_cache is True:
                 presents = presents + (outputs[1],)
 
@@ -966,6 +1144,7 @@ class GPT2Model(GPT2PreTrainedModel):
             attentions=all_self_attentions,
             cross_attentions=all_cross_attentions,
         )
+        # "presents" is a tuple of all layers of hidden states of keys and values sequences that include entire past sequence and current input sequence!!
 
 
 @add_start_docstrings(
@@ -980,8 +1159,10 @@ class GPT2LMHeadModel(GPT2PreTrainedModel, GenerationMixin):
 
     def __init__(self, config):
         super().__init__(config)
+        # base model is GPT2Model 
         self.transformer = GPT2Model(config)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        # from n_embd to vocab_size. matrix weight is (vocab_size, n_embd). why no bias? to match nn.Embedding layer.
 
         # Model parallel
         self.model_parallel = False
@@ -1027,6 +1208,65 @@ class GPT2LMHeadModel(GPT2PreTrainedModel, GenerationMixin):
     def set_output_embeddings(self, new_embeddings):
         self.lm_head = new_embeddings
 
+    # This method is removed in new version
+    def prepare_inputs_for_generation(self, input_ids, past_key_values=None, inputs_embeds=None, **kwargs):
+        token_type_ids = kwargs.get("token_type_ids", None)
+        # only use last token for inputs_ids if past is passed in as argument. 
+        # why? Because this function is called inside base class PretrainedModel.generate() function. Only used in decoding, not in training.
+        # past is used to save computation of self attention in autoregressive manner.  
+
+        # it's possible that at the beginning of generation, input_ids is the entire prompt, and past is None. In this case, all input_ids should be used as input_ids. 
+        # once past is not None, input_ids should be just the last generated token, and previous generated tokens are put into past. 
+        # Does past include prompty?
+        # Omit tokens covered by past_key_values
+        if past_key_values:
+            past_length = past_key_values[0][0].shape[2]
+
+            # Some generation methods already pass only the last input ID
+            if input_ids.shape[1] > past_length:
+                remove_prefix_length = past_length
+            else:
+                # Default to old behavior: keep only final ID
+                remove_prefix_length = input_ids.shape[1] - 1
+
+            input_ids = input_ids[:, remove_prefix_length:]
+            if token_type_ids is not None:
+                token_type_ids = token_type_ids[:, -input_ids.shape[1] :]
+
+
+        # if input_ids have padding tokens, should include attention_mask in the returned dict which is input to forward() ??
+        attention_mask = kwargs.get("attention_mask", None)
+        position_ids = kwargs.get("position_ids", None)
+
+        if attention_mask is not None and position_ids is None:
+            # create position_ids on the fly for batch generation
+            position_ids = attention_mask.long().cumsum(-1) - 1
+            position_ids.masked_fill_(attention_mask == 0, 1)
+            if past_key_values:
+                position_ids = position_ids[:, -input_ids.shape[1] :]
+        else:
+            position_ids = None
+
+        # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
+        if inputs_embeds is not None and past_key_values is None:
+            model_inputs = {"inputs_embeds": inputs_embeds}
+        else:
+            model_inputs = {"input_ids": input_ids}
+
+        model_inputs.update(
+            {
+                "past_key_values": past_key_values,
+                "use_cache": kwargs.get("use_cache"),
+                "position_ids": position_ids,
+                "attention_mask": attention_mask,
+                "token_type_ids": token_type_ids,
+            }
+        )
+
+        return model_inputs
+        # use_cache is boolean
+        # returned object need to be dict so that it can be used as kwargs to other functions, such as forward()
+
     @add_start_docstrings_to_model_forward(GPT2_INPUTS_DOCSTRING)
     @add_code_sample_docstrings(
         checkpoint=_CHECKPOINT_FOR_DOC,
@@ -1056,6 +1296,9 @@ class GPT2LMHeadModel(GPT2PreTrainedModel, GenerationMixin):
             `labels = input_ids` Indices are selected in `[-100, 0, ..., config.vocab_size]` All labels set to `-100`
             are ignored (masked), the loss is only computed for labels in `[0, ..., config.vocab_size]`
         """
+        # in training, past can be None, or encoder key and value sequences for encoder-decoder model.
+        # in decoding, past can be already generated tokens earlier for decoder only model, or concatenation of encoder key and value sequences and already generated tokens earlier.
+
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         transformer_outputs = self.transformer(
@@ -1073,6 +1316,7 @@ class GPT2LMHeadModel(GPT2PreTrainedModel, GenerationMixin):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
+        # the first entry of GPT2Model output is the last layer hidden state vectors of length of input_ids.
         hidden_states = transformer_outputs[0]
 
         # Set device for model parallelism
@@ -1088,10 +1332,12 @@ class GPT2LMHeadModel(GPT2PreTrainedModel, GenerationMixin):
             labels = labels.to(lm_logits.device)
             # Shift so that tokens < n predict n
             shift_logits = lm_logits[..., :-1, :].contiguous()
+            # the last prediction in lm_logits is for the last token of input, which has no corresponding label!
             shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
             loss_fct = CrossEntropyLoss()
             loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+            # batch loss, a scalar. by default is averaged.
 
         if not return_dict:
             output = (lm_logits,) + transformer_outputs[1:]
@@ -1135,10 +1381,13 @@ class GPT2DoubleHeadsModel(GPT2PreTrainedModel, GenerationMixin):
 
     def __init__(self, config):
         super().__init__(config)
+        # ? In multiple-choice classification task, each choice is concatenated with context to become its own example.
         config.num_labels = 1
         self.transformer = GPT2Model(config)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         self.multiple_choice_head = SequenceSummary(config)
+        # SequenceSummary creates a nn.Module whose forward() takes a sequence of hidden states,
+        # and return a single hidden vector summary of a sequence hidden states.
 
         # Model parallel
         self.model_parallel = False
@@ -1185,6 +1434,54 @@ class GPT2DoubleHeadsModel(GPT2PreTrainedModel, GenerationMixin):
 
     def set_output_embeddings(self, new_embeddings):
         self.lm_head = new_embeddings
+
+    # This method is removed in new version
+    def prepare_inputs_for_generation(self, input_ids, inputs_embeds=None, past_key_values=None, **kwargs):
+        token_type_ids = kwargs.get("token_type_ids", None)
+        # only last token for inputs_ids if past is defined in kwargs
+        # Omit tokens covered by past_key_values
+        if past_key_values:
+            past_length = past_key_values[0][0].shape[2]
+
+            # Some generation methods already pass only the last input ID
+            if input_ids.shape[1] > past_length:
+                remove_prefix_length = past_length
+            else:
+                # Default to old behavior: keep only final ID
+                remove_prefix_length = input_ids.shape[1] - 1
+
+            input_ids = input_ids[:, remove_prefix_length:]
+            if token_type_ids is not None:
+                token_type_ids = token_type_ids[:, -input_ids.shape[1] :]
+
+        attention_mask = kwargs.get("attention_mask", None)
+        position_ids = kwargs.get("position_ids", None)
+
+        if attention_mask is not None and position_ids is None:
+            # create position_ids on the fly for batch generation
+            position_ids = attention_mask.long().cumsum(-1) - 1
+            position_ids.masked_fill_(attention_mask == 0, 1)
+            if past_key_values:
+                position_ids = position_ids[:, -input_ids.shape[1] :]
+        else:
+            position_ids = None
+
+        # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
+        if inputs_embeds is not None and past_key_values is None:
+            model_inputs = {"inputs_embeds": inputs_embeds}
+        else:
+            model_inputs = {"input_ids": input_ids.contiguous()}
+
+        model_inputs.update(
+            {
+                "past_key_values": past_key_values,
+                "use_cache": kwargs.get("use_cache"),
+                "position_ids": position_ids,
+                "attention_mask": attention_mask,
+                "token_type_ids": token_type_ids,
+            }
+        )
+        return model_inputs
 
     @add_start_docstrings_to_model_forward(GPT2_INPUTS_DOCSTRING)
     @replace_return_docstrings(output_type=GPT2DoubleHeadsModelOutput, config_class=_CONFIG_FOR_DOC)
@@ -1262,6 +1559,7 @@ class GPT2DoubleHeadsModel(GPT2PreTrainedModel, GenerationMixin):
         )
 
         hidden_states = transformer_outputs[0]
+        # the first entry of GPT2Model output is the last layer hidden state vectors of length input_ids.
 
         # Set device for model parallelism
         if self.model_parallel:
@@ -1269,6 +1567,7 @@ class GPT2DoubleHeadsModel(GPT2PreTrainedModel, GenerationMixin):
             hidden_states = hidden_states.to(self.lm_head.weight.device)
 
         lm_logits = self.lm_head(hidden_states)
+        # SequenceSummary needs to know the position index of classification token.
         mc_logits = self.multiple_choice_head(hidden_states, mc_token_ids).squeeze(-1)
 
         mc_loss = None
@@ -1386,6 +1685,7 @@ class GPT2ForSequenceClassification(GPT2PreTrainedModel):
             return_dict=return_dict,
         )
         hidden_states = transformer_outputs[0]
+        # the first entry of GPT2Model output is the last layer hidden state vectors of length of input_ids.
         logits = self.score(hidden_states)
 
         if input_ids is not None:
@@ -1412,6 +1712,7 @@ class GPT2ForSequenceClassification(GPT2PreTrainedModel):
                 )
 
         pooled_logits = logits[torch.arange(batch_size, device=logits.device), sequence_lengths]
+        # the hidden state of last token of input sequence, before any padding tokens.
 
         loss = None
         if labels is not None:

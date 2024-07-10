@@ -25,6 +25,50 @@ from ...utils import logging
 
 logger = logging.get_logger(__name__)
 
+BERT_PRETRAINED_CONFIG_ARCHIVE_MAP = {
+    "google-bert/bert-base-uncased": "https://huggingface.co/google-bert/bert-base-uncased/resolve/main/config.json",
+    "google-bert/bert-large-uncased": "https://huggingface.co/google-bert/bert-large-uncased/resolve/main/config.json",
+    "google-bert/bert-base-cased": "https://huggingface.co/google-bert/bert-base-cased/resolve/main/config.json",
+    "google-bert/bert-large-cased": "https://huggingface.co/google-bert/bert-large-cased/resolve/main/config.json",
+    "google-bert/bert-base-multilingual-uncased": "https://huggingface.co/google-bert/bert-base-multilingual-uncased/resolve/main/config.json",
+    "google-bert/bert-base-multilingual-cased": "https://huggingface.co/google-bert/bert-base-multilingual-cased/resolve/main/config.json",
+    "google-bert/bert-base-chinese": "https://huggingface.co/google-bert/bert-base-chinese/resolve/main/config.json",
+    "google-bert/bert-base-german-cased": "https://huggingface.co/google-bert/bert-base-german-cased/resolve/main/config.json",
+    "google-bert/bert-large-uncased-whole-word-masking": (
+        "https://huggingface.co/google-bert/bert-large-uncased-whole-word-masking/resolve/main/config.json"
+    ),
+    "google-bert/bert-large-cased-whole-word-masking": (
+        "https://huggingface.co/google-bert/bert-large-cased-whole-word-masking/resolve/main/config.json"
+    ),
+    "google-bert/bert-large-uncased-whole-word-masking-finetuned-squad": (
+        "https://huggingface.co/google-bert/bert-large-uncased-whole-word-masking-finetuned-squad/resolve/main/config.json"
+    ),
+    "google-bert/bert-large-cased-whole-word-masking-finetuned-squad": (
+        "https://huggingface.co/google-bert/bert-large-cased-whole-word-masking-finetuned-squad/resolve/main/config.json"
+    ),
+    "google-bert/bert-base-cased-finetuned-mrpc": "https://huggingface.co/google-bert/bert-base-cased-finetuned-mrpc/resolve/main/config.json",
+    "google-bert/bert-base-german-dbmdz-cased": "https://huggingface.co/google-bert/bert-base-german-dbmdz-cased/resolve/main/config.json",
+    "google-bert/bert-base-german-dbmdz-uncased": "https://huggingface.co/google-bert/bert-base-german-dbmdz-uncased/resolve/main/config.json",
+    "cl-tohoku/bert-base-japanese": "https://huggingface.co/cl-tohoku/bert-base-japanese/resolve/main/config.json",
+    "cl-tohoku/bert-base-japanese-whole-word-masking": (
+        "https://huggingface.co/cl-tohoku/bert-base-japanese-whole-word-masking/resolve/main/config.json"
+    ),
+    "cl-tohoku/bert-base-japanese-char": (
+        "https://huggingface.co/cl-tohoku/bert-base-japanese-char/resolve/main/config.json"
+    ),
+    "cl-tohoku/bert-base-japanese-char-whole-word-masking": (
+        "https://huggingface.co/cl-tohoku/bert-base-japanese-char-whole-word-masking/resolve/main/config.json"
+    ),
+    "TurkuNLP/bert-base-finnish-cased-v1": (
+        "https://huggingface.co/TurkuNLP/bert-base-finnish-cased-v1/resolve/main/config.json"
+    ),
+    "TurkuNLP/bert-base-finnish-uncased-v1": (
+        "https://huggingface.co/TurkuNLP/bert-base-finnish-uncased-v1/resolve/main/config.json"
+    ),
+    "wietsedv/bert-base-dutch-cased": "https://huggingface.co/wietsedv/bert-base-dutch-cased/resolve/main/config.json",
+    # See all BERT models at https://huggingface.co/models?filter=bert
+}
+
 
 class BertConfig(PretrainedConfig):
     r"""
@@ -116,7 +160,9 @@ class BertConfig(PretrainedConfig):
         classifier_dropout=None,
         **kwargs,
     ):
+        # first call base class initializer, then can overwrite/add this class specific parameters.
         super().__init__(pad_token_id=pad_token_id, **kwargs)
+        # why is pad_token_id special?
 
         self.vocab_size = vocab_size
         self.hidden_size = hidden_size
@@ -149,6 +195,50 @@ class BertOnnxConfig(OnnxConfig):
                 ("token_type_ids", dynamic_axis),
             ]
         )
+
+
+# an example config file: https://s3.amazonaws.com/models.huggingface.co/bert/bert-base-uncased-config.json
+# {
+#   "architectures": [
+#     "BertForMaskedLM"
+#   ],
+#   "attention_probs_dropout_prob": 0.1,
+#   "hidden_act": "gelu",
+#   "hidden_dropout_prob": 0.1,
+#   "hidden_size": 768,
+#   "initializer_range": 0.02,
+#   "intermediate_size": 3072,
+#   "max_position_embeddings": 512,
+#   "num_attention_heads": 12,
+#   "num_hidden_layers": 12,
+#   "type_vocab_size": 2,
+#   "vocab_size": 30522
+# }
+
+
+# an example config file: https://s3.amazonaws.com/models.huggingface.co/bert/bert-large-cased-config.json
+# {
+#   "architectures": [
+#     "BertForMaskedLM"
+#   ],
+#   "attention_probs_dropout_prob": 0.1, 
+#   "directionality": "bidi", 
+#   "hidden_act": "gelu", 
+#   "hidden_dropout_prob": 0.1, 
+#   "hidden_size": 1024, 
+#   "initializer_range": 0.02, 
+#   "intermediate_size": 4096, 
+#   "max_position_embeddings": 512, 
+#   "num_attention_heads": 16, 
+#   "num_hidden_layers": 24, 
+#   "pooler_fc_size": 768, 
+#   "pooler_num_attention_heads": 12, 
+#   "pooler_num_fc_layers": 3, 
+#   "pooler_size_per_head": 128, 
+#   "pooler_type": "first_token_transform", 
+#   "type_vocab_size": 2, 
+#   "vocab_size": 28996
+# }
 
 
 __all__ = ["BertConfig", "BertOnnxConfig"]

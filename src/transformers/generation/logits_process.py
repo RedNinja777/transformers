@@ -28,6 +28,49 @@ from ..utils.logging import get_logger
 logger = get_logger(__name__)
 
 
+# In the domain of object-oriented programming, the usage patterns for interacting with an object can be divided into two basic categories, which are 'invocation' and 'inspection'.
+
+# Invocation means interacting with an object by invoking its methods. Usually this is combined with polymorphism, 
+# so that invoking a given method may run different code depending on the type of an object.
+
+# Inspection means the ability for external code (outside of the object's methods) to examine the type or properties of that object, 
+# and make decisions on how to treat that object based on that information.
+
+# Both usage patterns serve the same general end, which is to be able to support the processing of diverse and potentially novel objects in a uniform way, 
+# but at the same time allowing processing decisions to be customized for each different type of object.
+
+# In classical OOP theory, invocation is the preferred usage pattern, and inspection is actively discouraged, being considered a relic of an earlier, procedural programming style. 
+# However, in practice this view is simply too dogmatic and inflexible.
+
+# In particular, there is often a need to process objects in a way that wasn't anticipated by the creator of the object class. 
+# It is not always the best solution to build in to every object methods that satisfy the needs of every possible user of that object. 
+# Moreover, there are many powerful dispatch philosophies that are in direct contrast to the classic OOP requirement of behavior 
+# being strictly encapsulated within an object, examples being rule or pattern-match driven logic.
+
+# On the other hand, one of the criticisms of inspection by classic OOP theorists is the lack of formalisms and the ad hoc nature of what is being inspected. 
+# In a language such as Python, in which almost any aspect of an object can be reflected and directly accessed by external code, 
+# there are many different ways to test whether an object conforms to a particular protocol or not. 
+# For example, if asking 'is this object a mutable sequence container?', one can look for a base class of 'list', or one can look for a method named '__getitem__'. 
+# But note that although these tests may seem obvious, neither of them are correct, as one generates false negatives, and the other false positives.
+
+# The generally agreed-upon remedy is to standardize the tests, and group them into a formal arrangement. 
+# This is most easily done by associating with each class a set of standard testable properties, either via the inheritance mechanism or some other means. 
+# Each test carries with it a set of promises: it contains a promise about the general behavior of the class, and a promise as to what other class methods will be available.
+
+# Abstract Base Classes, or ABCs are simply Python classes that are added into an object's inheritance tree to signal certain features of that object to an external inspector. 
+# Tests are done using isinstance(), and the presence of a particular ABC means that the test has passed.
+
+# In addition, the ABCs define a minimal set of methods that establish the characteristic behavior of the type. 
+# Code that discriminates objects based on their ABC type can trust that those methods will always be present. 
+# Each of these methods are accompanied by an generalized abstract semantic definition that is described in the documentation for the ABC. 
+# These standard semantic definitions are not enforced, but are strongly recommended.
+
+# Like all other things in Python, these promises are in the nature of a gentlemen's agreement, 
+# which in this case means that while the language does enforce some of the promises made in the ABC, 
+# it is up to the implementer of the concrete class to insure that the remaining ones are kept.
+
+
+
 LOGITS_PROCESSOR_INPUTS_DOCSTRING = r"""
     Args:
         input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
@@ -41,6 +84,19 @@ LOGITS_PROCESSOR_INPUTS_DOCSTRING = r"""
 
 """
 
+# What's the difference between logits_processor and logits_warper?
+# logits_processor is used in all generation methods, beam or no beam, sample or greedy.
+# logits_warper is used only in sample generation methods
+# warp means to bend or twist 
+
+# Python's abstract base classes are like Java's interfaces. 
+# Java uses interfaces because it doesn't have multiple inheritance, so a class implementing multiple interfaces to define its contract to outside world. 
+# Because Python has multiple inheritance there is no need of a separate concept of interface; simply use abstract base classes that define interface without implementation.
+
+
+
+
+# !! Note: when calling LogitsProcessor() and LogitsWarper(), input_ids does NOT include next_tokens whose logits are scores
 
 class LogitsProcessor:
     """Abstract base class for all logit processors that can be applied during generation."""
@@ -50,6 +106,7 @@ class LogitsProcessor:
         raise NotImplementedError(
             f"{self.__class__} is an abstract class. Only classes inheriting this class can be called."
         )
+        # use @abstractmethod decorator instead?
 
 
 class LogitsWarper:
@@ -91,6 +148,8 @@ class LogitsProcessorList(list):
                 The processed prediction scores.
 
         """
+        # input_ids is prompt_to_decoder + generated_sequence_so_far; first dim size is (expanded) batch_size
+        # scores is the logits (and further, log probability in beam search) vector of current step's token being generated; shape (batch_size, vocab_size). The larger the more likely to be generated.
         for processor in self:
             function_args = inspect.signature(processor.__call__).parameters
             if len(function_args) > 2:
@@ -102,6 +161,7 @@ class LogitsProcessorList(list):
                 scores = processor(input_ids, scores, **kwargs)
             else:
                 scores = processor(input_ids, scores)
+            # every processor returns updated logits/probabilities of current token position, which is a FloatTensor
 
         return scores
 
@@ -144,6 +204,11 @@ class MinLengthLogitsProcessor(LogitsProcessor):
     A number: one thousand, nine hundred and ninety-four
     ```
     """
+    # set eos_token prob to zero if min_length is not reached.
+
+    # Does min_length include eos_token?
+
+    # how about force generating bos_token at the beginning? Is bos_token usually not generated?
 
     def __init__(self, min_length: int, eos_token_id: Union[int, List[int], torch.Tensor], device: str = "cpu"):
         if not isinstance(min_length, int) or min_length < 0:
@@ -159,10 +224,13 @@ class MinLengthLogitsProcessor(LogitsProcessor):
 
     @add_start_docstrings(LOGITS_PROCESSOR_INPUTS_DOCSTRING)
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
+        # scores is the logits (and further, log probability in beam search) vector of current step's token being generated; shape (batch_size, vocab_size). 
+        # Does input_ids include next_tokens whose logits are scores?
         vocab_tensor = torch.arange(scores.shape[-1], device=scores.device)
         eos_token_mask = isin_mps_friendly(vocab_tensor, self.eos_token_id)
         scores_processed = scores.clone()
         if input_ids.shape[-1] < self.min_length:
+            # for the current token being generated, set eos_token prob to zero if min_length is not reached
             scores_processed = torch.where(eos_token_mask, -math.inf, scores)
         return scores_processed
 
@@ -286,6 +354,7 @@ class TemperatureLogitsWarper(LogitsProcessor):
     'Hugging Face Company is a company that has been around for over 20 years']
     ```
     """
+    # Temperature is > 0 (higher temperature > 1 => logits difference are reduced => more likely to sample low probability tokens than without temperature)
 
     def __init__(self, temperature: float):
         if not isinstance(temperature, float) or not (temperature > 0):
@@ -301,6 +370,7 @@ class TemperatureLogitsWarper(LogitsProcessor):
 
     @add_start_docstrings(LOGITS_PROCESSOR_INPUTS_DOCSTRING)
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
+        # unlike penalty on scores, temperature adjustment of score does not depend on positive/negative of score.
         scores_processed = scores / self.temperature
         return scores_processed
 
@@ -341,8 +411,13 @@ class RepetitionPenaltyLogitsProcessor(LogitsProcessor):
     I'm not going to be able to do that. I'll just have to go out and play
     ```
     """
+    # this penalize the repetition of individual token. May not make sense because of subword tokens
+
+    # how about penalize/forbid generating again the last generated token? 
+    # but consider the possibility of two consecutive letters can be legitimate?
 
     def __init__(self, penalty: float):
+        # penalty is a number >= 1: 1 means no penalty, > 1 means penalize repetition. (0, 1) means encouraging repetition which makes no sense.
         if not isinstance(penalty, float) or not (penalty > 0):
             raise ValueError(f"`penalty` has to be a strictly positive float, but is {penalty}")
 
@@ -350,13 +425,104 @@ class RepetitionPenaltyLogitsProcessor(LogitsProcessor):
 
     @add_start_docstrings(LOGITS_PROCESSOR_INPUTS_DOCSTRING)
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
+        # input_ids is for decoder, and is already generated sequences token ids, shape (batch_size * num_beams, seq_len). 
+        # Does input_ids include current token to be generated? NO!
+        # scores is for the current token to be generated, logit/score of each vocab word before softmax layer, shape (batch_size * num_beams, vocab_size). 
+        # Does input_ids include prompt? Yes, for decoder only model. No for encoder-decoder model because 'prompt' becomes input to encoder.
+
+        # input_ids here serves as index of gather(). It's the decoder sequence generated so far (including prompty)
         score = torch.gather(scores, 1, input_ids)
+        # score tensor shape [batch_size * num_beams, seq_len], the same as index tensor which is input_ids here.
+        # it contains probabilities of tokens that have already appeared in input_ids prior to current token to be generated.
+
+        # torch.gather(input, dim, index, out=None, sparse_grad=False)   Gathers values from input tensor along an axis specified by dim.
+        # The purpose of gather() is to do more complicated slicing than python index slicing, i.e., slicing not straight row or column.
+        # input and index must have the same number of dimensions. It is also required that index.size(d) <= input.size(d) for all dimensions d != dim. 
+        # out tensor will have the same shape as index. Note that input and index do not broadcast against each other.
+
+        # If input is an n-dimensional tensor with size (x_0, x_1, ..., x_{i-1}, x_i, x_{i+1}, ..., x_{n-1}) and dim = i, 
+        # then index must be an n-dimensional tensor with size (x_0, x_1, ..., x_{i-1}, y, x_{i+1}, ..., x_{n-1}) where y >= 1.
+        # For a 3-D tensor the output is specified by:
+        # out[i][j][k] = input[index[i][j][k]][j][k]  # if dim == 0
+        # out[i][j][k] = input[i][index[i][j][k]][k]  # if dim == 1
+        # out[i][j][k] = input[i][j][index[i][j][k]]  # if dim == 2
 
         # if score < 0 then repetition penalty has to be multiplied to reduce the token probabilities
         score = torch.where(score < 0, score * self.penalty, score / self.penalty)
 
         scores_processed = scores.scatter(1, input_ids, score)
         return scores_processed
+
+        # torch.Tensor.scatter_(dim, index, src, reduce=None) -> Tensor
+        # Writes all values from the tensor src into self at the indices specified in the index tensor. 
+        # For each value in src, its output index is specified by its "index" in "src" for dimension != dim and by the corresponding "value" in "index" for dimension = dim.
+
+        # Parameters
+        #    dim (int) – the axis along which to index
+        #    index (LongTensor) – the indices of elements to scatter, can be either empty or of the same dimensionality as src. When empty, the operation returns self unchanged.
+        #    src (Tensor or float) – the source element(s) to scatter.
+        #    reduce (str, optional) – reduction operation to apply, can be either 'add' or 'multiply'. Reducing with the "add" operation is the same as using scatter_add_().
+
+        # For a 3-D tensor, self is updated as:
+        # self[index[i][j][k]][j][k] = src[i][j][k]  # if dim == 0
+        # self[i][index[i][j][k]][k] = src[i][j][k]  # if dim == 1
+        # self[i][j][index[i][j][k]] = src[i][j][k]  # if dim == 2
+
+        # This is the reverse operation of the manner described in gather().
+
+        # self, index and src (if it is a Tensor) should all have the same number of dimensions. It is also required that index.size(d) <= src.size(d) for all dimensions d, 
+        # and that index.size(d) <= self.size(d) for all dimensions d != dim. 
+        # Note that index and src do not broadcast.
+        # !! shape of index tensor determines corresponding elements of src to be scattered into self!!
+        # Moreover, as for gather(), the "values" of "index" tensor must be between 0 and self.size(dim) - 1 inclusive.
+
+        # Warning
+        # When indices are not unique, the behavior is non-deterministic (one of the values from src will be picked arbitrarily) 
+        # and the gradient will be incorrect (it will be propagated to all locations in the source that correspond to the same index)!
+
+        # Note
+        # The backward pass is implemented only for src.shape == index.shape.
+
+        # Additionally accepts an optional reduce argument that allows specification of an optional reduction operation, 
+        # which is applied to all values in the tensor src into self at the indicies specified in the index. 
+        # For each value in src, the reduction operation is applied to an index in self which is specified 
+        # by its index in src for dimension != dim and by the corresponding value in index for dimension = dim.
+
+        # Given a 3-D tensor and reduction using the multiplication operation, self is updated as:
+        # self[index[i][j][k]][j][k] *= src[i][j][k]  # if dim == 0
+        # self[i][index[i][j][k]][k] *= src[i][j][k]  # if dim == 1
+        # self[i][j][index[i][j][k]] *= src[i][j][k]  # if dim == 2
+
+        # Example:
+
+        # >>> src = torch.arange(1, 11).reshape((2, 5))
+        # >>> src
+        # tensor([[ 1,  2,  3,  4,  5],
+        #         [ 6,  7,  8,  9, 10]])
+        # >>> index = torch.tensor([[0, 1, 2, 0]])  # index tensor determines how many elements of src will be scattered into self
+        # >>> torch.zeros(3, 5, dtype=src.dtype).scatter_(0, index, src)
+        # tensor([[1, 0, 0, 4, 0],
+        #         [0, 2, 0, 0, 0],
+        #         [0, 0, 3, 0, 0]])
+        #
+        # >>> index = torch.tensor([[0, 1, 2], [0, 1, 4]])
+        # >>> torch.zeros(3, 5, dtype=src.dtype).scatter_(1, index, src)
+        # tensor([[1, 2, 3, 0, 0],
+        #         [6, 7, 0, 0, 8],
+        #         [0, 0, 0, 0, 0]])
+
+        # >>> torch.full((2, 4), 2.).scatter_(1, torch.tensor([[2], [3]]),
+        # ...            1.23, reduce='multiply')
+        # tensor([[2.0000, 2.0000, 2.4600, 2.0000],
+        #         [2.0000, 2.0000, 2.0000, 2.4600]])
+        # >>> torch.full((2, 4), 2.).scatter_(1, torch.tensor([[2], [3]]),
+        # ...            1.23, reduce='add')
+        # tensor([[2.0000, 2.0000, 3.2300, 2.0000],
+        #         [2.0000, 2.0000, 2.0000, 3.2300]])
+
+
+
+        # another way to implement: vectorize and remain in GPU?
 
 
 class EncoderRepetitionPenaltyLogitsProcessor(LogitsProcessor):
@@ -468,17 +634,33 @@ class TopPLogitsWarper(LogitsProcessor):
     @add_start_docstrings(LOGITS_PROCESSOR_INPUTS_DOCSTRING)
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
         sorted_logits, sorted_indices = torch.sort(scores, descending=False)
+        # torch.sort(input, dim=-1, descending=False, out=None) -> (Tensor, LongTensor) sorts along dim independently. return new tensor
         cumulative_probs = sorted_logits.softmax(dim=-1).cumsum(dim=-1)
 
         # Remove tokens with cumulative top_p above the threshold (token with 0 are kept)
         sorted_indices_to_remove = cumulative_probs <= (1 - self.top_p)
+        # > is the same as torch.gt() which returns a BoolTensor. True/False is auto converted to 1/0. Non-zero/0 is auto converted to True/False.
         # Keep at least min_tokens_to_keep
+        # (set to min_tokens_to_keep-1 because we add the first one below)
         sorted_indices_to_remove[..., -self.min_tokens_to_keep :] = 0
+        # Shift the indices to the right to keep also the first token above the threshold
+        # sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()  # result of cumsum() makes the last entry 1.0. 
+        # clone() copies data, but gradients will be passed from original tensor. It's like an identity function.
+        # sorted_indices_to_remove[..., 0] = 0  # the largest probability is always kept.
+        # sorted_indices_to_remove shape [batch_size, vocab_size]
 
         # scatter sorted tensors to original indexing
+        # torch.Tensor.scatter(dim, index, src) -> Tensor. Writes all values from the tensor src into self at the indices specified in the index tensor. 
+        # For each value in src, its output index is specified by its index in src for dimension != dim and by the corresponding value in index for dimension = dim.
+        # This is the reverse operation of the behavior of gather().
         indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+        # both sorted_indices and sorted_indices_to_remove have shape [batch_size, vocab_size]. All elements of sorted_indices_to_remove is 0 or 1; 
+        # each element of sorted_indices_to_remove is scattered into self tensor, at the index specified by the corresponding corresponding value of sorted_indices
         scores_processed = scores.masked_fill(indices_to_remove, self.filter_value)
+        # scores_processed still have shape (batch_size, vocab_size), only some values are now -inf
         return scores_processed
+        # scores_processed is made by replacing input scores with some entry values changed to -inf. Still has shape (batch_size, vocab_size).
+        # scores_processed can be positive and negative, right? Yes for non_beam search; in beam search, log_softmax is used to calculate logits so they are negative
 
 
 class TopKLogitsWarper(LogitsProcessor):
@@ -530,7 +712,21 @@ class TopKLogitsWarper(LogitsProcessor):
         top_k = min(self.top_k, scores.size(-1))  # Safety check
         # Remove all tokens with a probability less than the last token of the top-k
         indices_to_remove = scores < torch.topk(scores, top_k)[0][..., -1, None]
+        # use -1 will remove the last dimension, i.e., take out the last one in the dimension; use None to add a dimension of size 1 for broadcast! Bad code, hard to understand.
+        # torch.topk(input, k, dim=None, largest=True, sorted=True, out=None) -> (Tensor, LongTensor) Returns the k largest elements of the input tensor along dim dimension.
+        # If dim is not provided, the LAST dimension of the input is chosen.
+        # A namedtuple of (values, indices) is returned, where the indices are the indices of the elements in the original input tensor.
+        # The boolean option sorted if True, will make sure that the returned k elements are themselves sorted. 
+        # What do output values and indices look like?
+        #  - values is a Tensor that has the same number of dimensions as input, and the dim dimension has size k, all other dimensions have same size as input.
+        #  - indices has the same shape as values; the entries are indices of the topk values in dim dimension of input. 
+        #    -- indices can be used for index slicing, sactter, gather, ...
+
+        # what about None? None in indexing is to insert a new dimension. Recall trailing dimensions can be omitted. 
+
+        # Note that .shape is an alias for .size(), and was added to more closely match numpy.
         scores_processed = scores.masked_fill(indices_to_remove, self.filter_value)
+        # scores_processed still have shape (batch_size, vocab_size), only some are now -inf.
         return scores_processed
 
 
@@ -692,6 +888,7 @@ class TypicalLogitsWarper(LogitsProcessor):
         last_ind = (cumulative_probs < self.mass).sum(dim=1)
         last_ind.clamp_(max=sorted_scores.shape[-1] - 1)
         sorted_indices_to_remove = sorted_scores > sorted_scores.gather(1, last_ind.view(-1, 1))
+        # Keep at least min_tokens_to_keep (set to min_tokens_to_keep-1 because we add the first one below)
         sorted_indices_to_remove[..., : self.min_tokens_to_keep] = 0
         indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
 
@@ -839,6 +1036,7 @@ class EtaLogitsWarper(LogitsProcessor):
 
     @add_start_docstrings(LOGITS_PROCESSOR_INPUTS_DOCSTRING)
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
+        # Calculate the adaptive cutoff
         probabilities = scores.softmax(dim=-1)
         entropy = torch.distributions.Categorical(logits=scores).entropy()
         eta = torch.min(self.epsilon, torch.sqrt(self.epsilon) * torch.exp(-entropy))[..., None]
@@ -871,12 +1069,25 @@ def _get_ngrams(ngram_size: int, prev_input_ids: torch.Tensor, num_hypos: int):
     """
     # Initialize an empty list of dictionaries, one for each hypothesis (index) in the range of num_hypos
     generated_ngrams = [{} for _ in range(num_hypos)]
+    # generated_ngrams is a list of dict, each dict is for one example in the batch. 
+    # keys are all possible contiguous ngrams of size no_repeat_ngram_size - 1
+    # values are list of tokens that have made no_repeat_ngram_size ngrams in prev_input_ids. 
     for idx in range(num_hypos):
         gen_tokens = prev_input_ids[idx].tolist()
         generated_ngram = generated_ngrams[idx]
+        # gen_tokens = prev_input_ids[idx].tolist()  # .tolist() move data to cpu
+        # generated_ngram = generated_ngrams[idx]   # get the dict of the example
+        # recall that cur_len >= no_repeat_ngram_size - 1
         # Loop through each n-gram of size ngram_size in the list of tokens (gen_tokens)
         for ngram in zip(*[gen_tokens[i:] for i in range(ngram_size)]):
+            # tricky! 
+            # [gen_tokens[i:] for i in range(no_repeat_ngram_size)] is a list of ngram_size lists; each list starts at position 0, 1, ..., ngram_size - 1.
+            # zip these lists (be truncate to the shortest list length) composes all ngrams in prev_input_ids.
             prev_ngram_tuple = tuple(ngram[:-1])
+            # update the dict of the batch item. 
+            # key is tuple of tokens of size ngram_size - 1,
+            # value is the list of individual tokens that has made ngrams which appeared in prev_input_ids
+            # calculated at each token generation step, slow? Not cached?
             generated_ngram[prev_ngram_tuple] = generated_ngram.get(prev_ngram_tuple, []) + [ngram[-1]]
     return generated_ngrams
 
@@ -899,8 +1110,11 @@ def _get_generated_ngrams(banned_ngrams, prev_input_ids, ngram_size, cur_len):
         List of tokens that are banned.
     """
     # Before decoding the next token, prevent decoding of ngrams that have already appeared
+    # cur_len is length of prev_input_ids, cur_len is the position index of the token being generated in the input_ids sequence
     start_idx = cur_len + 1 - ngram_size
+    # the index from which to current token position would make an n-gram
     ngram_idx = tuple(prev_input_ids[start_idx:cur_len].tolist())
+    # tolist() moves data to cpu. https://pytorch.org/docs/stable/tensors.html#torch.Tensor.tolist. slow down?
     return banned_ngrams.get(ngram_idx, [])
 
 
@@ -908,15 +1122,28 @@ def _calc_banned_ngram_tokens(
     ngram_size: int, prev_input_ids: torch.Tensor, num_hypos: int, cur_len: int
 ) -> List[Iterable[int]]:
     """Copied from fairseq for no_repeat_ngram in beam_search"""
+    # prev_input_ids is prompt_to_decoder + generated_sequence_so_far. shape?
+    # num_hypos is the number of generated sequences, it's the same as prev_input_ids.size(0), which is batch_size * num_beams
+    # no_repeat_ngram_size is a python number
+    # here ngram is not n whole words, but n tokens.
+    # cur_len does NOT include the token being generated
+
     if cur_len + 1 < ngram_size:
         # return no banned tokens if we haven't generated no_repeat_ngram_size tokens yet
         return [[] for _ in range(num_hypos)]
     generated_ngrams = _get_ngrams(ngram_size, prev_input_ids, num_hypos)
+    # generated_ngrams is a list of dict, each dict is for one example in the batch. 
+    # keys are all possible contiguous ngrams of size no_repeat_ngram_size - 1
+    # values are list of tokens that have made no_repeat_ngram_size ngrams in prev_input_ids. 
+
     banned_tokens = [
         _get_generated_ngrams(generated_ngrams[hypo_idx], prev_input_ids[hypo_idx], ngram_size, cur_len)
         for hypo_idx in range(num_hypos)
     ]
     return banned_tokens
+    # returned banned_tokens is list of lists. Out list len is num_hypos. Each element of outside list is a list of token ids that are not allowed at current token position, 
+    # because otherwise it would have made an ngram of tokens that exist in prev_input_ids.
+
 
 
 class NoRepeatNGramLogitsProcessor(LogitsProcessor):
@@ -960,6 +1187,7 @@ class NoRepeatNGramLogitsProcessor(LogitsProcessor):
     Today I’m not sure if I can get a better understanding of the nature of this issue
     ```
     """
+    # here the ngram means tokens, not words
 
     def __init__(self, ngram_size: int):
         if not isinstance(ngram_size, int) or ngram_size <= 0:
@@ -971,7 +1199,10 @@ class NoRepeatNGramLogitsProcessor(LogitsProcessor):
         num_batch_hypotheses = scores.shape[0]
         cur_len = input_ids.shape[-1]
         scores_processed = scores.clone()
+        # calculate a list of banned tokens to prevent repetitively generating the same ngrams
         banned_batch_tokens = _calc_banned_ngram_tokens(self.ngram_size, input_ids, num_batch_hypotheses, cur_len)
+
+        # banned_batch_tokens is a list of lists of ints; each entry is list of banned token_id for the current token being generated, of one example of the batch
         for i, banned_tokens in enumerate(banned_batch_tokens):
             scores_processed[i, banned_tokens] = -float("inf")
 
@@ -1154,6 +1385,13 @@ class SequenceBiasLogitsProcessor(LogitsProcessor):
         scores_processed = scores + bias
         return scores_processed
 
+        # calculate a list of banned tokens for the current token position being generated according to bad words
+        # banned_tokens is a list of lists; each entry of outer list is for one example of the batch, it's a list of individual tokens that would make a bad word.
+        # tolist() copy data in input_ids to cpu. Is it slow and unnecessary?
+
+        # Modify the scores in place by setting the banned tokens logits to `-inf`
+
+
     def _prepare_bias_variables(self, scores: torch.FloatTensor):
         vocabulary_size = scores.shape[-1]
 
@@ -1280,6 +1518,10 @@ class NoBadWordsLogitsProcessor(SequenceBiasLogitsProcessor):
     def __init__(
         self, bad_words_ids: List[List[int]], eos_token_id: Optional[Union[int, List[int], torch.Tensor]] = None
     ):
+        # prev_input_ids is input_ids_to_function_generate (if decoder only like GPT; otherwise just [bos] token) + generated_sequence_so_far
+        # bad_words_ids is a list of lists; each item of outer list is a list of token_id that together makes a bad word/phrases. In other words, each list is a tokenized bad words
+        # bad_words_ids is a list of lists; each entry is a list of token_ids that together makes a bad word/phrase.
+        # banned_mask_list is a list of lists. Each inner list is a 2D list, first item is example index in the batch, second item is the token_id
         self.bad_word_ids = bad_words_ids
         self._validate_arguments()
 
@@ -1366,9 +1608,14 @@ class PrefixConstrainedLogitsProcessor(LogitsProcessor):
 
     @add_start_docstrings(LOGITS_PROCESSOR_INPUTS_DOCSTRING)
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
+        # input_ids batch dim is already expanded by num_beams, shape [batch_size * num_beams, cur_len]. Note input_ids never shrinks!
+        # scores is logits of next_tokens given input_ids, shape [batch_size * num_beams, vocab_size]
         mask = torch.full_like(scores, -math.inf)
         for batch_id, beam_sent in enumerate(input_ids.view(-1, self._num_beams, input_ids.shape[-1])):
+            # enumerate a tensor will enumerate its first dim.
+            # beam_sent is a tensor of shape [self._num_beams, cur_len]
             for beam_id, sent in enumerate(beam_sent):
+                # sent is a tensor of shape [cur_len], it's one sequence of input_ids up to current step
                 prefix_allowed_tokens = self._prefix_allowed_tokens_fn(batch_id, sent)
                 if len(prefix_allowed_tokens) == 0:
                     raise ValueError(
@@ -1455,6 +1702,8 @@ class HammingDiversityLogitsProcessor(LogitsProcessor):
     'the solar system formed 4.6 billion years ago from the collapse of a giant interstellar molecular cloud. of the objects that orbit the Sun directly, the largest are the eight planets. the rest of the objects are smaller objects, such as the five dwarf planets and small solar system bodies.']
     ```
     """
+    # Make different groups diverse
+    # within each group it's just normal beam search
 
     def __init__(self, diversity_penalty: float, num_beams: int, num_beam_groups: int):
         if not isinstance(diversity_penalty, float) or (not diversity_penalty > 0.0):
@@ -1467,6 +1716,7 @@ class HammingDiversityLogitsProcessor(LogitsProcessor):
             raise ValueError("`num_beam_groups` should be an integer strictly larger than 1.")
         if num_beam_groups > num_beams:
             raise ValueError("`beam_groups` has to be smaller or equal to `num_beams`.")
+        # number of beams per group
         self._num_sub_beams = num_beams // num_beam_groups
 
     def __call__(
@@ -1495,6 +1745,12 @@ class HammingDiversityLogitsProcessor(LogitsProcessor):
         """
         # hamming diversity: penalise using same token in current group which was used in previous groups at
         # the same time step
+
+        # input_ids batch dim is already expanded by num_beams, shape [batch_size * num_beams, cur_len]
+        # scores is logits of current generation step, shape [batch_size * num_beams, vocab_size]
+        # current_tokens is tokens being generated at current step, shape [batch_size * num_beams]
+        # beam_group_idx 
+
         batch_size = current_tokens.shape[0] // self._num_beams
         group_start_idx = beam_group_idx * self._num_sub_beams
         group_end_idx = min(group_start_idx + self._num_sub_beams, self._num_beams)
@@ -1511,12 +1767,24 @@ class HammingDiversityLogitsProcessor(LogitsProcessor):
                 batch_idx * self._num_beams : batch_idx * self._num_beams + group_start_idx
             ]
             token_frequency = torch.bincount(previous_group_tokens, minlength=vocab_size).to(scores.device)
+            # token_frequency is an int tensor of shape [vocab_size], it's the frequency of each token in vocab that appears in previous group
             scores_processed[batch_idx * group_size : (batch_idx + 1) * group_size] -= (
                 self._diversity_penalty * token_frequency
             )
 
         return scores_processed
 
+        #  torch.bincount(input: Tensor, weights: Tensor=None, minlength: int=0) Count the frequency of each value in an array of non-negative ints.
+        #     The number of bins (size 1) is one larger than the largest value in input unless input is empty, in which case the result is a tensor of size 0. 
+        #     If minlength is specified, the number of bins is at least minlength and if input is empty, then the result is tensor of size minlength filled with zeros. 
+        #     If n is the value at position i, out[n] += weights[i] if weights is specified else out[n] += 1.
+
+        #     Parameters
+        #             input (Tensor) – 1-d int tensor
+        #             weights (Tensor) – optional, weight for each value in the input tensor. Should be of same size as input tensor.
+        #             minlength (int) – optional, minimum number of bins. Should be non-negative.
+        #     Returns
+        #         a tensor of shape Size([max(input) + 1]) if input is non-empty, else Size(0)
 
 class ForcedBOSTokenLogitsProcessor(LogitsProcessor):
     r"""
@@ -1632,6 +1900,7 @@ class InfNanRemoveLogitsProcessor(LogitsProcessor):
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
         # set all nan values to 0.0
         scores_processed = torch.where(scores != scores, 0.0, scores)
+        # fun facts: None is not = None, 
 
         # set all +/-inf values to max/min possible value
         scores_processed = torch.where(scores == float("inf"), torch.finfo(scores.dtype).max, scores_processed)

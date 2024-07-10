@@ -27,16 +27,127 @@ logger = logging.get_logger(__name__)
 
 VOCAB_FILES_NAMES = {"vocab_file": "vocab.txt"}
 
+PRETRAINED_VOCAB_FILES_MAP = {
+    "vocab_file": {
+        "google-bert/bert-base-uncased": "https://huggingface.co/google-bert/bert-base-uncased/resolve/main/vocab.txt",
+        "google-bert/bert-large-uncased": "https://huggingface.co/google-bert/bert-large-uncased/resolve/main/vocab.txt",
+        "google-bert/bert-base-cased": "https://huggingface.co/google-bert/bert-base-cased/resolve/main/vocab.txt",
+        "google-bert/bert-large-cased": "https://huggingface.co/google-bert/bert-large-cased/resolve/main/vocab.txt",
+        "google-bert/bert-base-multilingual-uncased": (
+            "https://huggingface.co/google-bert/bert-base-multilingual-uncased/resolve/main/vocab.txt"
+        ),
+        "google-bert/bert-base-multilingual-cased": "https://huggingface.co/google-bert/bert-base-multilingual-cased/resolve/main/vocab.txt",
+        "google-bert/bert-base-chinese": "https://huggingface.co/google-bert/bert-base-chinese/resolve/main/vocab.txt",
+        "google-bert/bert-base-german-cased": "https://huggingface.co/google-bert/bert-base-german-cased/resolve/main/vocab.txt",
+        "google-bert/bert-large-uncased-whole-word-masking": (
+            "https://huggingface.co/google-bert/bert-large-uncased-whole-word-masking/resolve/main/vocab.txt"
+        ),
+        "google-bert/bert-large-cased-whole-word-masking": (
+            "https://huggingface.co/google-bert/bert-large-cased-whole-word-masking/resolve/main/vocab.txt"
+        ),
+        "google-bert/bert-large-uncased-whole-word-masking-finetuned-squad": (
+            "https://huggingface.co/google-bert/bert-large-uncased-whole-word-masking-finetuned-squad/resolve/main/vocab.txt"
+        ),
+        "google-bert/bert-large-cased-whole-word-masking-finetuned-squad": (
+            "https://huggingface.co/google-bert/bert-large-cased-whole-word-masking-finetuned-squad/resolve/main/vocab.txt"
+        ),
+        "google-bert/bert-base-cased-finetuned-mrpc": (
+            "https://huggingface.co/google-bert/bert-base-cased-finetuned-mrpc/resolve/main/vocab.txt"
+        ),
+        "google-bert/bert-base-german-dbmdz-cased": "https://huggingface.co/google-bert/bert-base-german-dbmdz-cased/resolve/main/vocab.txt",
+        "google-bert/bert-base-german-dbmdz-uncased": (
+            "https://huggingface.co/google-bert/bert-base-german-dbmdz-uncased/resolve/main/vocab.txt"
+        ),
+        "TurkuNLP/bert-base-finnish-cased-v1": (
+            "https://huggingface.co/TurkuNLP/bert-base-finnish-cased-v1/resolve/main/vocab.txt"
+        ),
+        "TurkuNLP/bert-base-finnish-uncased-v1": (
+            "https://huggingface.co/TurkuNLP/bert-base-finnish-uncased-v1/resolve/main/vocab.txt"
+        ),
+        "wietsedv/bert-base-dutch-cased": (
+            "https://huggingface.co/wietsedv/bert-base-dutch-cased/resolve/main/vocab.txt"
+        ),
+    }
+}
+
+PRETRAINED_POSITIONAL_EMBEDDINGS_SIZES = {
+    "google-bert/bert-base-uncased": 512,
+    "google-bert/bert-large-uncased": 512,
+    "google-bert/bert-base-cased": 512,
+    "google-bert/bert-large-cased": 512,
+    "google-bert/bert-base-multilingual-uncased": 512,
+    "google-bert/bert-base-multilingual-cased": 512,
+    "google-bert/bert-base-chinese": 512,
+    "google-bert/bert-base-german-cased": 512,
+    "google-bert/bert-large-uncased-whole-word-masking": 512,
+    "google-bert/bert-large-cased-whole-word-masking": 512,
+    "google-bert/bert-large-uncased-whole-word-masking-finetuned-squad": 512,
+    "google-bert/bert-large-cased-whole-word-masking-finetuned-squad": 512,
+    "google-bert/bert-base-cased-finetuned-mrpc": 512,
+    "google-bert/bert-base-german-dbmdz-cased": 512,
+    "google-bert/bert-base-german-dbmdz-uncased": 512,
+    "TurkuNLP/bert-base-finnish-cased-v1": 512,
+    "TurkuNLP/bert-base-finnish-uncased-v1": 512,
+    "wietsedv/bert-base-dutch-cased": 512,
+}
+
+PRETRAINED_INIT_CONFIGURATION = {
+    "google-bert/bert-base-uncased": {"do_lower_case": True},
+    "google-bert/bert-large-uncased": {"do_lower_case": True},
+    "google-bert/bert-base-cased": {"do_lower_case": False},
+    "google-bert/bert-large-cased": {"do_lower_case": False},
+    "google-bert/bert-base-multilingual-uncased": {"do_lower_case": True},
+    "google-bert/bert-base-multilingual-cased": {"do_lower_case": False},
+    "google-bert/bert-base-chinese": {"do_lower_case": False},
+    "google-bert/bert-base-german-cased": {"do_lower_case": False},
+    "google-bert/bert-large-uncased-whole-word-masking": {"do_lower_case": True},
+    "google-bert/bert-large-cased-whole-word-masking": {"do_lower_case": False},
+    "google-bert/bert-large-uncased-whole-word-masking-finetuned-squad": {"do_lower_case": True},
+    "google-bert/bert-large-cased-whole-word-masking-finetuned-squad": {"do_lower_case": False},
+    "google-bert/bert-base-cased-finetuned-mrpc": {"do_lower_case": False},
+    "google-bert/bert-base-german-dbmdz-cased": {"do_lower_case": False},
+    "google-bert/bert-base-german-dbmdz-uncased": {"do_lower_case": True},
+    "TurkuNLP/bert-base-finnish-cased-v1": {"do_lower_case": False},
+    "TurkuNLP/bert-base-finnish-uncased-v1": {"do_lower_case": True},
+    "wietsedv/bert-base-dutch-cased": {"do_lower_case": False},
+}
+
 
 def load_vocab(vocab_file):
     """Loads a vocabulary file into a dictionary."""
+    # Vocabulary file is just a list of tokens, with one token per line. The line number (starting at 0) becomes token_id
+    # just like regular dict but remember the order that items were inserted. 
     vocab = collections.OrderedDict()
     with open(vocab_file, "r", encoding="utf-8") as reader:
+        # returns a list containing each line in the file. '\n' is left at the end of each line string, and is only omitted on the last line of the file if the file doesn�t end in a newline.
         tokens = reader.readlines()
     for index, token in enumerate(tokens):
         token = token.rstrip("\n")
         vocab[token] = index
     return vocab
+
+# # another unofficial (maybe outdated) implementation that maps '[unusedX]' tokens
+# def load_vocab_and_map_unused(vocab_file):
+#     """Loads a vocabulary file into a dictionary.
+#     Also map reserved unused tokens to special tokens."""
+#     extra_map = {}
+#     extra_map['[unused1]'] = '[X_SEP]'
+#     for i in range(10):
+#         extra_map['[unused{}]'.format(i+2)] = '[SEP_{}]'.format(i)
+
+#     vocab = collections.OrderedDict()
+#     index = 0
+#     with open(vocab_file, "r", encoding="utf-8") as reader:
+#         while True:
+#             token = reader.readline()
+#             if not token:
+#                 break
+#             token = token.strip()
+#             if token in extra_map:
+#                 token = extra_map[token]
+#             vocab[token] = index
+#             index += 1
+#     return vocab
 
 
 def whitespace_tokenize(text):
@@ -45,6 +156,12 @@ def whitespace_tokenize(text):
     if not text:
         return []
     tokens = text.split()
+    # never-to-split tokens shouldn't have any white spaces, because this splitting by whitespace is called first!
+    # str.split(sep=None, maxsplit=-1) 
+    # If sep is given, consecutive delimiters are not grouped together and are deemed to delimit empty strings (for example, '1,,2'.split(',') returns ['1', '', '2']). 
+    # The sep argument may consist of multiple characters (for example, '1<>2<>3'.split('<>') returns ['1', '2', '3']). Splitting an empty string with a specified separator returns [''].
+    # If sep is not specified or is None, runs of consecutive whitespace are regarded as a single separator, and the result will contain no empty strings at the start or end if the string has leading or trailing whitespace. 
+    # Consequently, splitting an empty string or a string consisting of just whitespace with a None separator returns [].
     return tokens
 
 
@@ -111,13 +228,20 @@ class BertTokenizer(PreTrainedTokenizer):
         clean_up_tokenization_spaces=True,
         **kwargs,
     ):
+        # self.max_len_single_sentence = self.max_len - 2  # take into account special tokens
+        # self.max_len_sentences_pair = self.max_len - 3  # take into account special tokens
+
+        # load vocab from vocab_file
         if not os.path.isfile(vocab_file):
             raise ValueError(
                 f"Can't find a vocabulary file at path '{vocab_file}'. To load the vocabulary from a Google pretrained"
                 " model use `tokenizer = BertTokenizer.from_pretrained(PRETRAINED_MODEL_NAME)`"
             )
+        # a dict with token as key, and id as value. It's loaded from file. 
         self.vocab = load_vocab(vocab_file)
+        # Is self.vocab ever modified? Seems not?
         self.ids_to_tokens = collections.OrderedDict([(ids, tok) for tok, ids in self.vocab.items()])
+        # construct dict from a list of (k, v) tuples based on self.vocab.
         self.do_basic_tokenize = do_basic_tokenize
         if do_basic_tokenize:
             self.basic_tokenizer = BasicTokenizer(
@@ -153,14 +277,18 @@ class BertTokenizer(PreTrainedTokenizer):
         return len(self.vocab)
 
     def get_vocab(self):
+        # Return the full vocabulary, including loaded vocab and added new tokens
         return dict(self.vocab, **self.added_tokens_encoder)
 
     def _tokenize(self, text, split_special_tokens=False):
+        # Override base private abstract method. Only called in base class self.tokenize(). Generally do NOT override base tokenize() method in subclasses!
+        # Before this is called, added tokens and special tokens are already processed to not be split. That is, this method is not called for special tokens.
         split_tokens = []
         if self.do_basic_tokenize:
             for token in self.basic_tokenizer.tokenize(
                 text, never_split=self.all_special_tokens if not split_special_tokens else None
             ):
+                # self.all_special_tokens only includes those with values  and in SPECIAL_TOKENS_ATTRIBUTES. 
                 # If the token is part of the never_split set
                 if token in self.basic_tokenizer.never_split:
                     split_tokens.append(token)
@@ -180,7 +308,10 @@ class BertTokenizer(PreTrainedTokenizer):
 
     def convert_tokens_to_string(self, tokens):
         """Converts a sequence of tokens (string) in a single string."""
+        # !! make sure tokens is a list of strs. If it's a single str, this method will split it into individual chars!!
+        # combine wordpieces into word.
         out_string = " ".join(tokens).replace(" ##", "").strip()
+        # but puncutations are still separated from words by " ". How to handle those??  A simple one is pretrainedTokenizer.clean_up_tokenization()
         return out_string
 
     def build_inputs_with_special_tokens(
@@ -233,6 +364,7 @@ class BertTokenizer(PreTrainedTokenizer):
             )
 
         if token_ids_1 is not None:
+            # this means token_ids are actual sequence tokens, without added special tokens.
             return [1] + ([0] * len(token_ids_0)) + [1] + ([0] * len(token_ids_1)) + [1]
         return [1] + ([0] * len(token_ids_0)) + [1]
 
@@ -264,8 +396,19 @@ class BertTokenizer(PreTrainedTokenizer):
         if token_ids_1 is None:
             return len(cls + token_ids_0 + sep) * [0]
         return len(cls + token_ids_0 + sep) * [0] + len(token_ids_1 + sep) * [1]
+        # Note the first sep token is type 0. 
 
     def save_vocabulary(self, save_directory: str, filename_prefix: Optional[str] = None) -> Tuple[str]:
+        """
+        Save the sentencepiece vocabulary (copy original file) and special tokens file to a directory.
+
+        Args:
+            vocab_path (:obj:`str`):
+                The directory in which to save the vocabulary.
+
+        Returns:
+            :obj:`Tuple(str)`: Paths to the files saved.
+        """
         index = 0
         if os.path.isdir(save_directory):
             vocab_file = os.path.join(
@@ -275,6 +418,7 @@ class BertTokenizer(PreTrainedTokenizer):
             vocab_file = (filename_prefix + "-" if filename_prefix else "") + save_directory
         with open(vocab_file, "w", encoding="utf-8") as writer:
             for token, token_index in sorted(self.vocab.items(), key=lambda kv: kv[1]):
+                # sort by token index
                 if index != token_index:
                     logger.warning(
                         f"Saving vocabulary to {vocab_file}: vocabulary indices are not consecutive."
@@ -286,8 +430,17 @@ class BertTokenizer(PreTrainedTokenizer):
         return (vocab_file,)
 
 
-class BasicTokenizer:
+class BasicTokenizer: 
     """
+    Runs basic tokenization 
+       - remove invalid characters (what are invalid?)
+       - replace all types of white spaces by a single space
+       - optionally tokenize chinese chars
+       - lower casing  (configurable), 
+         --strip accents, 
+       - punctuation splitting (i.e., every punctuation becomes a separate token), etc.)
+       - join all tokens by a single space
+       - call whitespace_tokenize (simply trim text and split by white space)
     Constructs a BasicTokenizer that will run basic tokenization (punctuation splitting, lower casing, etc.).
 
     Args:
@@ -336,6 +489,7 @@ class BasicTokenizer:
         """
         # union() returns a new set by concatenating the two sets.
         never_split = self.never_split.union(set(never_split)) if never_split else self.never_split
+        # remove invalid character, replace multiple white spaces with a single space. 
         text = self._clean_text(text)
 
         # This was added on November 1st, 2018 for the multilingual and Chinese
@@ -349,6 +503,7 @@ class BasicTokenizer:
         # prevents treating the same character with different unicode codepoints as different characters
         unicode_normalized_text = unicodedata.normalize("NFC", text)
         orig_tokens = whitespace_tokenize(unicode_normalized_text)
+        # simply trim text and split by white space. So never_split tokens shouldn't have any white spaces!
         split_tokens = []
         for token in orig_tokens:
             if token not in never_split:
@@ -359,12 +514,15 @@ class BasicTokenizer:
                 elif self.strip_accents:
                     token = self._run_strip_accents(token)
             split_tokens.extend(self._run_split_on_punc(token, never_split))
+            # split_tokens is now a list of str. 
 
         output_tokens = whitespace_tokenize(" ".join(split_tokens))
         return output_tokens
 
     def _run_strip_accents(self, text):
         """Strips accents from a piece of text."""
+        # Only done when lower casing??
+        # Return the normal form "NFD" for the Unicode string text.
         text = unicodedata.normalize("NFD", text)
         output = []
         for char in text:
@@ -376,6 +534,8 @@ class BasicTokenizer:
 
     def _run_split_on_punc(self, text, never_split=None):
         """Splits punctuation on a piece of text."""
+        # Every punctuation becomes a separate token. Intended? Yes.
+        # Punctuations here is quite general.
         if not self.do_split_on_punc or (never_split is not None and text in never_split):
             return [text]
         chars = list(text)
@@ -402,6 +562,7 @@ class BasicTokenizer:
         for char in text:
             cp = ord(char)
             if self._is_chinese_char(cp):
+                # chinese_char do not use space to separate thus insert space here.
                 output.append(" ")
                 output.append(char)
                 output.append(" ")
@@ -440,6 +601,7 @@ class BasicTokenizer:
             cp = ord(char)
             if cp == 0 or cp == 0xFFFD or _is_control(char):
                 continue
+            # replace all types of white space by a single space.
             if _is_whitespace(char):
                 output.append(" ")
             else:
@@ -459,6 +621,7 @@ class WordpieceTokenizer:
         """
         Tokenizes a piece of text into its word pieces. This uses a greedy longest-match-first algorithm to perform
         tokenization using the given vocabulary.
+        Note that added tokens and speical tokens are NOT split, so they don't get called WordpieceTokenizer.
 
         For example, `input = "unaffable"` wil return as output `["un", "##aff", "##able"]`.
 
@@ -472,6 +635,7 @@ class WordpieceTokenizer:
 
         output_tokens = []
         for token in whitespace_tokenize(text):
+            # token is treated as one word.
             chars = list(token)
             if len(chars) > self.max_input_chars_per_word:
                 output_tokens.append(self.unk_token)
@@ -492,6 +656,7 @@ class WordpieceTokenizer:
                         break
                     end -= 1
                 if cur_substr is None:
+                    # if greedy longest vocab match results in any part of word unmatched, the whole word is <unk>.
                     is_bad = True
                     break
                 sub_tokens.append(cur_substr)
@@ -502,6 +667,78 @@ class WordpieceTokenizer:
             else:
                 output_tokens.extend(sub_tokens)
         return output_tokens
+
+
+# Following is my extra util
+
+def _is_whitespace(char):
+    """Checks whether `char` is a whitespace character."""
+    # \t, \n, and \r are technically contorl characters but we treat them
+    # as whitespace since they are generally considered as such.
+    if char == " " or char == "\t" or char == "\n" or char == "\r":
+        return True
+    cat = unicodedata.category(char)
+    if cat == "Zs":
+        return True
+    return False
+
+
+def _is_control(char):
+    """Checks whether `char` is a control character."""
+    # \t, \n, and \r are technically control characters but we count them as whitespace characters.
+    if char == "\t" or char == "\n" or char == "\r":
+        return False
+    cat = unicodedata.category(char)
+    if cat.startswith("C"):
+        return True
+    return False
+
+
+def _is_punctuation(char):
+    """Checks whether `char` is a punctuation character."""
+    cp = ord(char)  # Unicode code point
+    # We treat all non-letter/number ASCII as punctuation.
+    # Characters such as "^", "$", and "`" are not in the Unicode
+    # Punctuation class but we treat them as punctuation anyways, for
+    # consistency.
+    #### But some characters have special meaning, like $ for money, - for composite words, etc. Cause issues?
+    if (cp >= 33 and cp <= 47) or (cp >= 58 and cp <= 64) or (cp >= 91 and cp <= 96) or (cp >= 123 and cp <= 126):
+        # 32 is space, 33 is '!', 47 is '/', 48 is '0', 57 is '9', 58 is ':', 64 is '@', 65 is 'A', 90 is 'Z', 91 is '[', 96 is '``, 97 is 'a', 122 is 'z', 127 is DELETE
+        return True
+    cat = unicodedata.category(char)
+    # Unicode 6.0 has 7 character categories, and each category has subcategories:
+    # - Letter (L): lowercase (Ll), modifier (Lm), titlecase (Lt), uppercase (Lu), other (Lo)
+    # - Mark (M): spacing combining (Mc), enclosing (Me), non-spacing (Mn)
+    # - Number (N): decimal digit (Nd), letter (Nl), other (No)
+    # - Punctuation (P): connector (Pc), dash (Pd), initial quote (Pi), final quote (Pf), open (Ps), close (Pe), other (Po)
+    # - Symbol (S): currency (Sc), modifier (Sk), math (Sm), other (So)
+    # - Separator (Z): line (Zl), paragraph (Zp), space (Zs)
+    # - Other (C): control (Cc), format (Cf), not assigned (Cn), private use (Co), surrogate (Cs)
+    if cat.startswith("P"):
+        return True
+    return False
+
+# The 14 Punctuation Marks in English Grammar:
+# sentence ending
+#   - period .
+#   - question mark ?
+#   - exclamation point ! 
+# pause
+#   - comma, 
+#   - semicolon ;
+#   - colon : 
+# join
+#   - dash --   A dash is used to separate words into statements.
+#   - hyphen -  A hyphen is used to join two or more words together into a compound term and is not separated by spaces. For example, part-time, back-to-back, well-known. 
+# further explanation
+#   - parentheses () 
+#   - brackets []
+#   - braces {} 
+# other
+#   - apostrophe '
+#   - quotation marks ""
+#   - ellipsis ...
+
 
 
 __all__ = ["BasicTokenizer", "BertTokenizer", "WordpieceTokenizer"]

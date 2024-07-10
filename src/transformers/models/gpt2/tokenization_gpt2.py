@@ -32,6 +32,31 @@ VOCAB_FILES_NAMES = {
     "merges_file": "merges.txt",
 }
 
+PRETRAINED_VOCAB_FILES_MAP = {
+    "vocab_file": {
+        "openai-community/gpt2": "https://huggingface.co/openai-community/gpt2/resolve/main/vocab.json",
+        "openai-community/gpt2-medium": "https://huggingface.co/openai-community/gpt2-medium/resolve/main/vocab.json",
+        "openai-community/gpt2-large": "https://huggingface.co/openai-community/gpt2-large/resolve/main/vocab.json",
+        "openai-community/gpt2-xl": "https://huggingface.co/openai-community/gpt2-xl/resolve/main/vocab.json",
+        "distilbert/distilgpt2": "https://huggingface.co/distilbert/distilgpt2/resolve/main/vocab.json",
+    },
+    "merges_file": {
+        "openai-community/gpt2": "https://huggingface.co/openai-community/gpt2/resolve/main/merges.txt",
+        "openai-community/gpt2-medium": "https://huggingface.co/openai-community/gpt2-medium/resolve/main/merges.txt",
+        "openai-community/gpt2-large": "https://huggingface.co/openai-community/gpt2-large/resolve/main/merges.txt",
+        "openai-community/gpt2-xl": "https://huggingface.co/openai-community/gpt2-xl/resolve/main/merges.txt",
+        "distilbert/distilgpt2": "https://huggingface.co/distilbert/distilgpt2/resolve/main/merges.txt",
+    },
+}
+
+PRETRAINED_POSITIONAL_EMBEDDINGS_SIZES = {
+    "openai-community/gpt2": 1024,
+    "openai-community/gpt2-medium": 1024,
+    "openai-community/gpt2-large": 1024,
+    "openai-community/gpt2-xl": 1024,
+    "distilbert/distilgpt2": 1024,
+}
+
 
 @lru_cache()
 def bytes_to_unicode():
@@ -44,23 +69,36 @@ def bytes_to_unicode():
     decent coverage. This is a significant percentage of your normal, say, 32K bpe vocab. To avoid that, we want lookup
     tables between utf-8 bytes and unicode strings.
     """
+    # what is bs? byte stream? in a byte number can be at most 255?
     bs = (
         list(range(ord("!"), ord("~") + 1)) + list(range(ord("¡"), ord("¬") + 1)) + list(range(ord("®"), ord("ÿ") + 1))
     )
+    # ord("!") = 33, space is 32. ord("~") = 126. ord("¡") = 161 = \u00a1, ord("¬") = 172 = \u00ac. ord("®") = 174 = \u00ae, ord("ÿ") = 255 = \u00ff.
+    # so all 0-9, A-Z, a-z, and common symbols are preserved their original ASCII symbols. All these are PRINTABLE. There are 188 of them. 
     cs = bs[:]
     n = 0
     for b in range(2**8):
+        # 0 to 255.
         if b not in bs:
+            # [0, 32], [127, 160], 173.
+            # these are UNPRINTABLE characters between [0, 255], and are converted to PRINTABLE Unicode characters. There are 68 of them. 
+            # n goes from 0 to 67, and so Unicode code point goes from 256 (\u0100) to 323 (\u0143)
             bs.append(b)
+            # use Unicode code points [256 (\u0100), 323 (\u0143)]] to represent other unused chars in [0, 255). 0 is NULL and become 256 = \u0100 = Ā. 
             cs.append(2**8 + n)
             n += 1
+    # ? convert Unicode code point to Unicode symbol. space (32) becomes 256 + 32 = 288 as its code point (\u0120), Ġ. '\t' becomes 256 + 9 = 265, \u0109 ĉ.
     cs = [chr(n) for n in cs]
     return dict(zip(bs, cs))
+    # now bs and cs have 256 elements. bs are still numbers in 0-255. 
+    # Unicode code point in cs are in ranges [33, 126], [161 (\u00a1), 172 (\u00ac)], [174 (\u00ae), 255 (\u00ff)], [256 (\u0100), 323 (\u0143)]. 
 
 
 def get_pairs(word):
     """
     Return set of symbol pairs in a word.
+       Is word a str? No, It's more general, it's a tuple of (intermediate) tokens that are in the vocab. 
+       Does this return bigrams of word? Yes, but a char of a word can be compound chars that were merged and placed in vocab earlier. 
 
     Word is represented as tuple of symbols (symbols being variable-length strings).
     """
@@ -72,9 +110,16 @@ def get_pairs(word):
     return pairs
 
 
+# does not have build_inputs_with_special_tokens() method. No bos or eos tokens added?
 class GPT2Tokenizer(PreTrainedTokenizer):
     """
     Construct a GPT-2 tokenizer. Based on byte-level Byte-Pair-Encoding.
+    GPT-2 BPE tokenizer. Peculiarities:
+        - Byte-level Byte-Pair-Encoding
+        - Requires a space to start the input string => the encoding and tokenize methods should be called with the
+          ``add_prefix_space`` flag set to ``True``.
+      Otherwise, this tokenizer ``encode`` and ``decode`` method will not conserve
+      the absence of a space at the beginning of a string:
 
     This tokenizer has been trained to treat spaces like parts of the tokens (a bit like sentencepiece) so a word will
     be encoded differently whether it is at the beginning of the sentence (without space) or not:
@@ -149,22 +194,50 @@ class GPT2Tokenizer(PreTrainedTokenizer):
         pad_token = AddedToken(pad_token, lstrip=False, rstrip=False) if isinstance(pad_token, str) else pad_token
 
         self.add_bos_token = add_bos_token
+        # the default behavior of GPT2 is to Not add bos or eos tokens.
+        # GPT2 is mainly used to generate text so it would not make a lot of sense to add a EOS of a input prompt.
+        # If one wants to finetune GPT2 for classification, he could manually add gpt2_tokenizer.eos_token to the input.
+
+        # self.max_len_single_sentence = (self.max_len)  
+		# no default special tokens - you can update this value if you add special tokens
+        # self.max_len_sentences_pair = (self.max_len)  
+		# no default special tokens - you can update this value if you add special tokens
 
         with open(vocab_file, encoding="utf-8") as vocab_handle:
+            # load json file into a dict, from token to id. Key is token.
             self.encoder = json.load(vocab_handle)
+            ## every individual Unicode character in every key of the vocab must be a byte only and the Unicode character must be in the keys of self.byte_encoder.
+            ## every tokens in the merge file must be one of the vocab.
         self.decoder = {v: k for k, v in self.encoder.items()}
         self.errors = errors  # how to handle errors in decoding
+        # ? maps a byte integer to a Unicode character.
         self.byte_encoder = bytes_to_unicode()
         self.byte_decoder = {v: k for k, v in self.byte_encoder.items()}
         with open(merges_file, encoding="utf-8") as merges_handle:
+            # in merges_file, first line is comment, last line is empty. Other lines are pairs ordered by frequency of appearing together.
             bpe_merges = merges_handle.read().split("\n")[1:-1]
         bpe_merges = [tuple(merge.split()) for merge in bpe_merges]
+        # ? {(,): idx}, the lower idx, the higher merge frequency.
         self.bpe_ranks = dict(zip(bpe_merges, range(len(bpe_merges))))
         self.cache = {}
         self.add_prefix_space = add_prefix_space
 
         # Should have added re.IGNORECASE so BPE merges can happen for capitalized versions of contractions
         self.pat = re.compile(r"""'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
+        # what does this do? Define patterns to be matched.
+        # RE pattern that matches some special tokens in English, space followed by letters or numbers, leading any whilespace followed by letters or numbers, 
+        #                         any whitespaces followed by non-whitespace, any whitespaces.
+
+        # ? matches 0 or 1 of preceding expression
+        # + matches 1 or more preceding expression
+        # * matches 0 or more preceding expression
+        # \s matches whitespace (space, multiple spaces, tab, newline)
+        # \p{L} matches a single Unicode code point in the category "letter".
+        # \p{N} matches any kind of numeric character in any script.
+
+
+
+        # This is kind of like a whitespace tokenizer but preserves the whitespace, which means we still assign white space special meaning to tokenize a string.
 
         super().__init__(
             errors=errors,
@@ -182,11 +255,19 @@ class GPT2Tokenizer(PreTrainedTokenizer):
         return len(self.encoder)
 
     def get_vocab(self):
+        # Return the full vocabulary, including loaded vocab and added new tokens
         return dict(self.encoder, **self.added_tokens_encoder)
 
     def bpe(self, token):
+        """
+        Called only in self._tokenize()  
+        Given an input token represented in Unicode characters in self.byte_encoder,
+        merge possible pairs of consecutive tokens until no more merges can be done,
+        combine all final merged tokens with space and output.
+        """
         if token in self.cache:
             return self.cache[token]
+        # similar to list(), converts iterable to a tuple. 
         word = tuple(token)
         pairs = get_pairs(word)
 
@@ -194,6 +275,7 @@ class GPT2Tokenizer(PreTrainedTokenizer):
             return token
 
         while True:
+            # lookup the most frequent possible merge
             bigram = min(pairs, key=lambda pair: self.bpe_ranks.get(pair, float("inf")))
             if bigram not in self.bpe_ranks:
                 break
@@ -211,6 +293,7 @@ class GPT2Tokenizer(PreTrainedTokenizer):
                     i = j
 
                 if word[i] == first and i < len(word) - 1 and word[i + 1] == second:
+                    # merge the pair of into a token
                     new_word.append(first + second)
                     i += 2
                 else:
@@ -222,6 +305,9 @@ class GPT2Tokenizer(PreTrainedTokenizer):
                 break
             else:
                 pairs = get_pairs(word)
+
+        # starting from individual chars, keep merging until no more merges can be done based on the merge file. 
+        # Then all final tokens are joined together into a string by a single space.
         word = " ".join(word)
         self.cache[token] = word
         return word
@@ -273,13 +359,20 @@ class GPT2Tokenizer(PreTrainedTokenizer):
 
     def _tokenize(self, text):
         """Tokenize a string."""
+        # Does NOT do some cleanings, such as replace other white spaces, such as \t, \r, \n, multiple whitespaces with a single space?
+        # Args:
+        #   - add_prefix_space (boolean, default False):
+        #      Begin the sentence with at least one space to get invariance to word order in GPT-2 (and RoBERTa) tokenizers. ??
         bpe_tokens = []
         for token in re.findall(self.pat, text):
+            # token is RE matched part of the input text. Different from split, whitespaces are preserved in matched tokens. 
             token = "".join(
                 self.byte_encoder[b] for b in token.encode("utf-8")
+                # token is a Unicode char? No, a Unicode string. str.encode() Return an encoded version of the string as a bytes object. 
             )  # Maps all our bytes to unicode strings, avoiding control tokens of the BPE (spaces in our case)
             bpe_tokens.extend(bpe_token for bpe_token in self.bpe(token).split(" "))
         return bpe_tokens
+        # list of tokens representing input text, after all merges are done. whitespaces are preserved. All tokens must be in vocab, self.encoder.
 
     def _convert_token_to_id(self, token):
         """Converts a token (str) in an id using the vocab."""
@@ -291,11 +384,28 @@ class GPT2Tokenizer(PreTrainedTokenizer):
 
     def convert_tokens_to_string(self, tokens):
         """Converts a sequence of tokens (string) in a single string."""
+        # Converts a sequence of tokens (strings) in vocab into a single string of regular Unicode string .
+        # all whitespaces are already preserved in tokens.
         text = "".join(tokens)
+        # bytearray is a mutable sequence of bytes.
         text = bytearray([self.byte_decoder[c] for c in text]).decode("utf-8", errors=self.errors)
         return text
 
     def save_vocabulary(self, save_directory: str, filename_prefix: Optional[str] = None) -> Tuple[str]:
+        """
+        Save the vocabulary and special tokens file to a directory.
+
+        Args:
+            save_directory (:obj:`str`):
+                The directory in which to save the vocabulary.
+
+        Returns:
+            :obj:`Tuple(str)`: Paths to the files saved.
+        """
+        # This only saves vocabulary. Does not save added tokens, which is done is save_pretrained(). 
+        # This should not be called by itself! It's already called inside save_pretrained(). 
+        # Always use save_pretrained() instead!!
+
         if not os.path.isdir(save_directory):
             logger.error(f"Vocabulary path ({save_directory}) should be a directory")
             return

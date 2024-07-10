@@ -24,6 +24,24 @@ from ...utils import logging
 
 logger = logging.get_logger(__name__)
 
+DISTILBERT_PRETRAINED_CONFIG_ARCHIVE_MAP = {
+    "distilbert-base-uncased": "https://huggingface.co/distilbert-base-uncased/resolve/main/config.json",
+    "distilbert-base-uncased-distilled-squad": (
+        "https://huggingface.co/distilbert-base-uncased-distilled-squad/resolve/main/config.json"
+    ),
+    "distilbert-base-cased": "https://huggingface.co/distilbert-base-cased/resolve/main/config.json",
+    "distilbert-base-cased-distilled-squad": (
+        "https://huggingface.co/distilbert-base-cased-distilled-squad/resolve/main/config.json"
+    ),
+    "distilbert-base-german-cased": "https://huggingface.co/distilbert-base-german-cased/resolve/main/config.json",
+    "distilbert-base-multilingual-cased": (
+        "https://huggingface.co/distilbert-base-multilingual-cased/resolve/main/config.json"
+    ),
+    "distilbert-base-uncased-finetuned-sst-2-english": (
+        "https://huggingface.co/distilbert-base-uncased-finetuned-sst-2-english/resolve/main/config.json"
+    ),
+}
+
 
 class DistilBertConfig(PretrainedConfig):
     r"""
@@ -136,6 +154,35 @@ class DistilBertOnnxConfig(OnnxConfig):
                 ("attention_mask", dynamic_axis),
             ]
         )
+
+
+
+# an example config file: https://s3.amazonaws.com/models.huggingface.co/bert/distilbert-base-uncased-config.json
+# {
+#   "architectures": [
+#     "DistilBertForMaskedLM"
+#   ],
+#   "activation": "gelu",
+#   "attention_dropout": 0.1,
+#   "dim": 768,
+#   "dropout": 0.1,
+#   "finetuning_task": null,
+#   "hidden_dim": 3072,
+#   "initializer_range": 0.02,
+#   "max_position_embeddings": 512,
+#   "n_heads": 12,
+#   "n_layers": 6,
+#   "num_labels": 2,
+#   "output_attentions": false,
+#   "output_hidden_states": false,
+#   "pruned_heads": {},
+#   "qa_dropout": 0.1,
+#   "seq_classif_dropout": 0.2,
+#   "sinusoidal_pos_embds": false,
+#   "tie_weights_": true,
+#   "torchscript": false,
+#   "vocab_size": 30522
+# }
 
 
 __all__ = ["DistilBertConfig", "DistilBertOnnxConfig"]

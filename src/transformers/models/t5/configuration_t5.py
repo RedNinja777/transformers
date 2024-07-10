@@ -23,6 +23,14 @@ from ...utils import logging
 
 logger = logging.get_logger(__name__)
 
+T5_PRETRAINED_CONFIG_ARCHIVE_MAP = {
+    "google-t5/t5-small": "https://huggingface.co/google-t5/t5-small/resolve/main/config.json",
+    "google-t5/t5-base": "https://huggingface.co/google-t5/t5-base/resolve/main/config.json",
+    "google-t5/t5-large": "https://huggingface.co/google-t5/t5-large/resolve/main/config.json",
+    "google-t5/t5-3b": "https://huggingface.co/google-t5/t5-3b/resolve/main/config.json",
+    "google-t5/t5-11b": "https://huggingface.co/google-t5/t5-11b/resolve/main/config.json",
+}
+
 
 class T5Config(PretrainedConfig):
     r"""
@@ -82,13 +90,20 @@ class T5Config(PretrainedConfig):
 
     def __init__(
         self,
+        # same for all sized t5 models. mt5 is 250112
         vocab_size=32128,
+        # hidden size. 512 for small; 768 for base; 1024 for large, 3b, 11b
         d_model=512,
+        # hidden size per head. 64 for small, base, large; 128 for 3b and 11b
         d_kv=64,
+        # intermediate layer hidden size, typically 4 * hidden size, but not always true. 2048 for small, 3072 for base, 4096 for large, 16384 for 3b, 65536 for 11b
         d_ff=2048,
+        # 6 for small, 12 for base, 24 for large, 3b, 11b.
         num_layers=6,
         num_decoder_layers=None,
+        # 8 for small; 12 for base; 16 for large; 32 for 3b; 128 for 11b
         num_heads=8,
+        # ? T5 uses relative position instead of absolute position? 
         relative_attention_num_buckets=32,
         relative_attention_max_distance=128,
         dropout_rate=0.1,
@@ -110,6 +125,7 @@ class T5Config(PretrainedConfig):
         self.num_decoder_layers = (
             num_decoder_layers if num_decoder_layers is not None else self.num_layers
         )  # default = symmetry
+        # symmetry between encoder and decoder
         self.num_heads = num_heads
         self.relative_attention_num_buckets = relative_attention_num_buckets
         self.relative_attention_max_distance = relative_attention_max_distance
@@ -166,6 +182,64 @@ class T5OnnxConfig(OnnxSeq2SeqConfigWithPast):
     @property
     def default_onnx_opset(self) -> int:
         return 13
+
+
+
+# Are prefix such as "summarize:", etc. special tokens or just treated as ordinary tokens?
+
+
+# an example config https://s3.amazonaws.com/models.huggingface.co/bert/t5-base-config.json
+# {
+#   "architectures": [
+#     "T5WithLMHeadModel"
+#   ],
+#   "d_ff": 3072,  # 2048 for small, 4096 for large, 16384 for 3b, 65536 for 11b
+#   "d_kv": 64,  # 64 for small, base, large; 128 for 3b and 11b
+#   "d_model": 768,  # 512 for small; 1024 for large, 3b, 11b
+#   "decoder_start_token_id": 0,
+#   "dropout_rate": 0.1,
+#   "eos_token_id": 1,
+#   "initializer_factor": 1.0,
+#   "is_encoder_decoder": true,
+#   "layer_norm_epsilon": 1e-06,
+#   "model_type": "t5",
+#   "n_positions": 512,
+#   "num_heads": 12,  # 8 for small; 12 for base; 16 for large; 32 for 3b; 128 for 11b
+#   "num_layers": 12,  # 6 for small, 12 for base, 24 for large, 3b, 11b.
+#   "output_past": true,
+#   "pad_token_id": 0,
+#   "relative_attention_num_buckets": 32,
+#   "task_specific_params": {
+#     "summarization": {
+#       "early_stopping": true,
+#       "length_penalty": 2.0,
+#       "max_length": 200,
+#       "min_length": 30,
+#       "no_repeat_ngram_size": 3,
+#       "num_beams": 4,
+#       "prefix": "summarize: "
+#     },
+#     "translation_en_to_de": {
+#       "early_stopping": true,
+#       "max_length": 300,
+#       "num_beams": 4,
+#       "prefix": "translate English to German: "
+#     },
+#     "translation_en_to_fr": {
+#       "early_stopping": true,
+#       "max_length": 300,
+#       "num_beams": 4,
+#       "prefix": "translate English to French: "
+#     },
+#     "translation_en_to_ro": {
+#       "early_stopping": true,
+#       "max_length": 300,
+#       "num_beams": 4,
+#       "prefix": "translate English to Romanian: "
+#     }
+#   },
+#   "vocab_size": 32128
+# }
 
 
 __all__ = ["T5Config", "T5OnnxConfig"]

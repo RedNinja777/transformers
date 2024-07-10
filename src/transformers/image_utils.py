@@ -20,6 +20,9 @@ from io import BytesIO
 from typing import TYPE_CHECKING, Dict, Iterable, List, Optional, Tuple, Union
 
 import numpy as np
+import PIL.Image
+import PIL.ImageOps
+
 import requests
 from packaging import version
 
@@ -96,6 +99,26 @@ logger = logging.get_logger(__name__)
 ImageInput = Union[
     "PIL.Image.Image", np.ndarray, "torch.Tensor", List["PIL.Image.Image"], List[np.ndarray], List["torch.Tensor"]
 ]  # noqa
+
+
+# cv2.imread read image into np.ndarray (H, W, C)
+# cv2 image.shape is H, W, C; values are [0, 255]. Default color scheme is BGR
+# PIL.Image.shape is also H, W, C; values are [0, 255]. Default color scheme is RGB.
+
+# To convert from ndarray image format (H, W, C) to PIL image format, use im_pil = Image.fromarray(im_np).
+# To look at values of pixels in PIL Image, use pixels = list(im_pil.getdata())
+# To convert from PIL Image format to cv2 format, use im_np = np.asarray(im_pil)
+
+# Most torchvision transformations accept both PIL images and tensor images, although some transformations are PIL-only and some are tensor-only. 
+# class torchvision.transforms.ToTensor  Convert a PIL Image or numpy.ndarray to tensor. 
+# Converts a PIL Image or numpy.ndarray (H x W x C) in the range [0, 255] to a torch.FloatTensor of shape (C x H x W) 
+# in the range [0.0, 1.0] if the PIL Image belongs to one of the modes (L, LA, P, I, F, RGB, YCbCr, RGBA, CMYK, 1) or if the numpy.ndarray has dtype = np.uint8
+# In the other cases, tensors are returned without scaling.
+
+# A Tensor Image is a tensor with (C, H, W) shape, where C is a number of channels, H and W are image height and width. 
+# The expected range of the values of a tensor image is implicitely defined by the tensor dtype. 
+# Tensor images with a float dtype are expected to have values in [0, 1). 
+# Tensor images with an integer dtype are expected to have values in [0, MAX_DTYPE] where MAX_DTYPE is the largest value that can be represented in that dtype.
 
 
 VideoInput = Union[
@@ -737,6 +760,7 @@ class ImageFeatureExtractionMixin:
                 rescale = isinstance(image.flat[0], np.floating)
             # If the channel as been moved to first dim, we put it back at the end.
             if image.ndim == 3 and image.shape[0] in [1, 3]:
+                # shape is [C, H, W], needs transpose to get PIL shape [H, W, C]
                 image = image.transpose(1, 2, 0)
             if rescale:
                 image = image * 255
@@ -1084,3 +1108,89 @@ def validate_kwargs(valid_processor_keys: List[str], captured_kwargs: List[str])
         unused_key_str = ", ".join(unused_keys)
         # TODO raise a warning here instead of simply logging?
         logger.warning(f"Unused or unrecognized kwargs: {unused_key_str}.")
+
+
+
+
+
+# pip3 install opencv-python
+# All OpenCV-Python array structures are converted to and from Numpy arrays. 
+# image = cv2.imread(image_file_path) read image_file_path into np.ndarray (H, W, C)
+# cv2 image.shape is [H, W, C]; values are [0, 255], dtype is uint8. Default color scheme is BGR. Use cv2.cvtColor(image, cv2.COLOR_BGR2RGB) 
+# cv2 image properties: shape, size, dtype, 
+# Arithmetic operations on cv2 images: add(), cv.addWeighted(), bitwise_and/or/not/xor() 
+# cv2.imdecode(buf, flags) Reads an image from a buffer in memory.
+# - The function imdecode reads an image from the specified buffer in the memory. If the buffer is too short or contains invalid data, the function returns an empty matrix.
+# - In the case of color images, the decoded images will have the channels stored in B G R order.
+# cv2.imencode(ext, img[, params]) Encodes an image represented by numpy ndarray into a memory buffer. Returns (is_success, im_buf_array).
+# - The function imencode compresses the image and stores it in the memory buffer that is resized to fit the result. 
+# - you can convert the returned buffer array to real bytes either with the tobytes() method or io.BytesIO().getvalue(). 
+#   -- The bytes we get is the image data. It is the same with saving the resized image in hard disk and then reading it in binary format open(img_file, 'rb').
+# cv2.imwrite(filename, img[, params]) Saves an image to a specified file.
+# - The function imwrite saves the image to the specified file. The image format is chosen based on the filename extension. 
+# - In general, only 8-bit single-channel or 3-channel (with 'BGR' channel order) images can be saved using this function, with these exceptions:
+#   -- 16-bit unsigned (CV_16U) images can be saved in the case of PNG, JPEG 2000, and TIFF formats
+#   -- 32-bit float (CV_32F) images can be saved in PFM, TIFF, OpenEXR, and Radiance HDR formats
+#   -- PNG images with an alpha channel can be saved using this function. To do this, create 8-bit (or 16-bit) 4-channel image BGRA, where the alpha channel goes last. 
+
+
+
+
+# pip install pillow
+# The PIL.Image module provides a class with the same name PIL.Image.Image which is used to represent a PIL image.
+# image = Image.open(image_file_path) read image_file_path into an Image object. The actual image data is not read from the file until you try to process the data (or call the load() method).
+# PIL.Image.Image.shape is also [H, W, C]; values are [0, 255]. Default color scheme is RGB.
+# To convert from ndarray image format (H, W, C) to PIL Image object format, use im_pil = Image.fromarray(im_np).
+# To look at values of pixels in PIL Image, use pixels = list(im_pil.getdata())
+# To convert from PIL format to cv2 format, use im_np = np.asarray(im_pil).
+
+# Image attributes: filename, format, mode, size, width, height, palette, info, is_animated, n_frames, 
+# Image mode: The mode of an image is a string which defines the type and depth of a pixel in the image. Each pixel uses the full range of the bit depth. 
+# - 1 (1-bit pixels, black and white, stored with one pixel per byte). This is bilevel. 
+# - L (8-bit pixels, black and white). This is the greyscale.
+# - P (8-bit pixels, mapped to any other mode using a color palette)
+# - RGB (3x8-bit pixels, true color)
+# - RGBA (4x8-bit pixels, true color with transparency mask)
+# - CMYK (4x8-bit pixels, color separation)
+# - YCbCr (3x8-bit pixels, color video format)
+#   -- Note that this refers to the JPEG, and not the ITU-R BT.2020, standard
+# - LAB (3x8-bit pixels, the L*a*b color space)
+# - HSV (3x8-bit pixels, Hue, Saturation, Value color space)
+# - I (32-bit signed integer pixels)
+# - F (32-bit floating point pixels)
+
+# methods: 
+# Image.thumbnail(size) creates a nice thumbnail preserving aspect ratios
+# Image.convert(mode=None, matrix=None, dither=None, palette=0, colors=256) Returns a converted copy of this image. 
+# Image.crop(box=None) Returns a rectangular region from this image. The box is a 4-tuple defining the left, upper, right, and lower pixel coordinate. 
+# - Coordinate System
+#   -- The Python Imaging Library uses a Cartesian pixel coordinate system, with (0,0) in the upper left corner. 
+#   -- Coordinates are usually passed to the library as 2-tuples (x, y). Rectangles are represented as 4-tuples, with the upper left corner given first. 
+# Image.save(image_file_path, format=None, **params) Saves this image under the given filename. If no format is specified, the format to use is determined from the filename extension, if possible.
+# - You can use a file object instead of a filename. In this case, you must always specify the format.
+#   -- eg., buf = io.BytesIO(), image.save(buf, format='JPEG'), image_bytes = buf.getvalue()
+# Image.tobytes(encoder_name='raw', *args) Return image as a bytes object.
+# - This method returns the raw image data from the Image object. For compressed image data (e.g. PNG, JPEG) use save(), with a BytesIO parameter for in-memory data.
+# PIL.Image.frombytes(mode, size, data, decoder_name='raw', *args) Creates a copy of an image memory from pixel data in a buffer.
+# - In its simplest form, this function takes three arguments (mode, size, and unpacked pixel data).
+# - You can also use any pixel decoder supported by PIL. For more information on available decoders, see the section Writing Your Own File Decoder.
+# - Note that this function decodes pixel data only, not entire images. If you have an entire image in a string, wrap it in a BytesIO object, and use open() to load it.
+# Image.resize(size, resample=None, box=None, reducing_gap=None) Returns a resized copy of this image.
+# - size : The requested size in pixels, as a 2-tuple: (width, height).
+# - resample : An optional resampling filter. This can be one of PIL.Image.NEAREST, PIL.Image.BOX, PIL.Image.BILINEAR, PIL.Image.HAMMING, PIL.Image.BICUBIC or PIL.Image.LANCZOS. 
+#   -- If the image has mode '1' or 'P', it is always set to PIL.Image.NEAREST. Otherwise, the default filter is PIL.Image.BICUBIC. See: Filters.
+
+
+
+
+# Most torchvision transformations accept both PIL images and tensor images, although some transformations are PIL-only and some are tensor-only. 
+# class torchvision.transforms.ToTensor  Convert a PIL Image object or numpy.ndarray to tensor. 
+# Converts a PIL Image or numpy.ndarray (H x W x C) in the range [0, 255] to a torch.FloatTensor of shape (C x H x W) 
+# in the range [0.0, 1.0] if the PIL Image belongs to one of the modes (L, LA, P, I, F, RGB, YCbCr, RGBA, CMYK, 1) or if the numpy.ndarray has dtype = np.uint8
+# In the other cases, tensors are returned without scaling.
+
+# A Tensor Image is a tensor with shape (C, H, W), where C is a number of channels, H and W are image height and width. 
+# The expected range of the values of a tensor image is implicitely defined by the tensor dtype. 
+# Tensor images with a float dtype are expected to have values in [0, 1). 
+# Tensor images with an integer dtype are expected to have values in [0, MAX_DTYPE] where MAX_DTYPE is the largest value that can be represented in that dtype.
+

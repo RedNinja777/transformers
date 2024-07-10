@@ -26,6 +26,14 @@ from ...utils import logging
 
 logger = logging.get_logger(__name__)
 
+GPT2_PRETRAINED_CONFIG_ARCHIVE_MAP = {
+    "openai-community/gpt2": "https://huggingface.co/openai-community/gpt2/resolve/main/config.json",
+    "openai-community/gpt2-medium": "https://huggingface.co/openai-community/gpt2-medium/resolve/main/config.json",
+    "openai-community/gpt2-large": "https://huggingface.co/openai-community/gpt2-large/resolve/main/config.json",
+    "openai-community/gpt2-xl": "https://huggingface.co/openai-community/gpt2-xl/resolve/main/config.json",
+    "distilbert/distilgpt2": "https://huggingface.co/distilbert/distilgpt2/resolve/main/config.json",
+}
+
 
 class GPT2Config(PretrainedConfig):
     """
@@ -268,6 +276,35 @@ class GPT2OnnxConfig(OnnxConfigWithPast):
     @property
     def default_onnx_opset(self) -> int:
         return 13
+
+
+
+
+# an example base gpt2 config file: https://s3.amazonaws.com/models.huggingface.co/bert/gpt2-config.json
+# {
+#   "activation_function": "gelu_new",
+#   "architectures": [
+#     "GPT2LMHeadModel"
+#   ],
+#   "attn_pdrop": 0.1,
+#   "bos_token_id": 50256,
+#   "embd_pdrop": 0.1,
+#   "eos_token_id": 50256,
+#   "initializer_range": 0.02,
+#   "layer_norm_epsilon": 1e-05,
+#   "model_type": "gpt2",
+#   "n_embd": 768,
+#   "n_head": 12,
+#   "n_layer": 12,
+#   "n_positions": 1024,
+#   "resid_pdrop": 0.1,
+#   "summary_activation": null,
+#   "summary_first_dropout": 0.1,
+#   "summary_proj_to_labels": true,
+#   "summary_type": "cls_index",
+#   "summary_use_proj": true,
+#   "vocab_size": 50257
+# }
 
 
 __all__ = ["GPT2Config", "GPT2OnnxConfig"]

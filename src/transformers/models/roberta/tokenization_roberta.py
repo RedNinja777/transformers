@@ -32,6 +32,39 @@ VOCAB_FILES_NAMES = {
     "merges_file": "merges.txt",
 }
 
+# all cased?
+PRETRAINED_VOCAB_FILES_MAP = {
+    "vocab_file": {
+        "FacebookAI/roberta-base": "https://huggingface.co/FacebookAI/roberta-base/resolve/main/vocab.json",
+        "FacebookAI/roberta-large": "https://huggingface.co/FacebookAI/roberta-large/resolve/main/vocab.json",
+        "FacebookAI/roberta-large-mnli": "https://huggingface.co/FacebookAI/roberta-large-mnli/resolve/main/vocab.json",
+        "distilbert/distilroberta-base": "https://huggingface.co/distilbert/distilroberta-base/resolve/main/vocab.json",
+        "openai-community/roberta-base-openai-detector": "https://huggingface.co/openai-community/roberta-base-openai-detector/resolve/main/vocab.json",
+        "openai-community/roberta-large-openai-detector": (
+            "https://huggingface.co/openai-community/roberta-large-openai-detector/resolve/main/vocab.json"
+        ),
+    },
+    "merges_file": {
+        "FacebookAI/roberta-base": "https://huggingface.co/FacebookAI/roberta-base/resolve/main/merges.txt",
+        "FacebookAI/roberta-large": "https://huggingface.co/FacebookAI/roberta-large/resolve/main/merges.txt",
+        "FacebookAI/roberta-large-mnli": "https://huggingface.co/FacebookAI/roberta-large-mnli/resolve/main/merges.txt",
+        "distilbert/distilroberta-base": "https://huggingface.co/distilbert/distilroberta-base/resolve/main/merges.txt",
+        "openai-community/roberta-base-openai-detector": "https://huggingface.co/openai-community/roberta-base-openai-detector/resolve/main/merges.txt",
+        "openai-community/roberta-large-openai-detector": (
+            "https://huggingface.co/openai-community/roberta-large-openai-detector/resolve/main/merges.txt"
+        ),
+    },
+}
+
+PRETRAINED_POSITIONAL_EMBEDDINGS_SIZES = {
+    "FacebookAI/roberta-base": 512,
+    "FacebookAI/roberta-large": 512,
+    "FacebookAI/roberta-large-mnli": 512,
+    "distilbert/distilroberta-base": 512,
+    "openai-community/roberta-base-openai-detector": 512,
+    "openai-community/roberta-large-openai-detector": 512,
+}
+
 
 @lru_cache()
 def bytes_to_unicode():
@@ -152,6 +185,7 @@ class RobertaTokenizer(PreTrainedTokenizer):
 
     vocab_files_names = VOCAB_FILES_NAMES
     model_input_names = ["input_ids", "attention_mask"]
+    # why remove "token_type_ids" defined in PreTrainedTokenizerBase? Because Roberta model does not need "token_type_ids"
 
     def __init__(
         self,
@@ -395,6 +429,7 @@ class RobertaTokenizer(PreTrainedTokenizer):
     def prepare_for_tokenization(self, text, is_split_into_words=False, **kwargs):
         add_prefix_space = kwargs.pop("add_prefix_space", self.add_prefix_space)
         if (is_split_into_words or add_prefix_space) and (len(text) > 0 and not text[0].isspace()):
+            # why add " " at beginning? due to the use of BPE? no problem if using SPE?
             text = " " + text
         return (text, kwargs)
 

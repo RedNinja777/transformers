@@ -67,6 +67,7 @@ class RobertaEmbeddings(nn.Module):
     # Copied from transformers.models.bert.modeling_bert.BertEmbeddings.__init__
     def __init__(self, config):
         super().__init__()
+        # RoBERTa uses different vocab from BERT; for example, RoBERTa padding_token is 1, BERT padding token id is 0.
         self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=config.pad_token_id)
         self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
         self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size)
@@ -75,6 +76,7 @@ class RobertaEmbeddings(nn.Module):
         # any TensorFlow checkpoint file
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
+
         # position_ids (1, len position emb) is contiguous in memory and exported when serialized
         self.position_embedding_type = getattr(config, "position_embedding_type", "absolute")
         self.register_buffer(
@@ -89,6 +91,13 @@ class RobertaEmbeddings(nn.Module):
         self.position_embeddings = nn.Embedding(
             config.max_position_embeddings, config.hidden_size, padding_idx=self.padding_idx
         )
+        # in RobertaConfig, pad_token_id=1, bos_token_id=0, eos_token_id=2
+        # so when position idx for padding tokens is set to self.padding_idx, which is done is create_position_ids_from_input_ids
+        # these padding tokens' position embedding is not updated either.
+
+        # RoBERTa does not use token type 
+
+        # config.max_position_embeddings larger than max_len?
 
     def forward(
         self, input_ids=None, token_type_ids=None, position_ids=None, inputs_embeds=None, past_key_values_length=0
@@ -100,6 +109,7 @@ class RobertaEmbeddings(nn.Module):
             else:
                 position_ids = self.create_position_ids_from_inputs_embeds(inputs_embeds)
 
+        # Copied from transformers.modeling_bert.BertEmbeddings.forward
         if input_ids is not None:
             input_shape = input_ids.size()
         else:
@@ -129,6 +139,7 @@ class RobertaEmbeddings(nn.Module):
         embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings)
         return embeddings
+        # This embeddings is layer normalized before sent to next layer.
 
     def create_position_ids_from_inputs_embeds(self, inputs_embeds):
         """
@@ -145,6 +156,8 @@ class RobertaEmbeddings(nn.Module):
         position_ids = torch.arange(
             self.padding_idx + 1, sequence_length + self.padding_idx + 1, dtype=torch.long, device=inputs_embeds.device
         )
+        # position_ids starts at padding_idx + 1? Why not starting at 0?
+        # The reason is we want padding tokens' embedding (input_emb + position_emb) to be not trained (0). 
         return position_ids.unsqueeze(0).expand(input_shape)
 
 
@@ -397,6 +410,7 @@ class RobertaSelfOutput(nn.Module):
         hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(hidden_states)
         hidden_states = self.LayerNorm(hidden_states + input_tensor)
+        # This is Post-Layer Normalization, which place LayerNorm after residual addition. Same as original Transformer and Bert.
         return hidden_states
 
 
@@ -454,6 +468,8 @@ class RobertaAttention(nn.Module):
             output_attentions,
         )
         attention_output = self.output(self_outputs[0], hidden_states)
+        # self.output has layer normalization at the end.
+        # so every self attention layer outputs are layer normalized 
         outputs = (attention_output,) + self_outputs[1:]  # add attentions if we output them
         return outputs
 
@@ -562,6 +578,7 @@ class RobertaLayer(nn.Module):
         layer_output = apply_chunking_to_forward(
             self.feed_forward_chunk, self.chunk_size_feed_forward, self.seq_len_dim, attention_output
         )
+        # The layer output is layer normalized, before sent to next layer.
         outputs = (layer_output,) + outputs
 
         # if decoder, return the attn key/values as the last output
@@ -694,6 +711,7 @@ class RobertaPreTrainedModel(PreTrainedModel):
 
     config_class = RobertaConfig
     base_model_prefix = "roberta"
+    # This attribute base_model_prefix is important to load pretrained model state_dict correctly.
     supports_gradient_checkpointing = True
     _no_split_modules = ["RobertaEmbeddings", "RobertaSelfAttention", "RobertaSdpaSelfAttention"]
     _supports_sdpa = True
@@ -811,6 +829,12 @@ class RobertaModel(RobertaPreTrainedModel):
         self.encoder = RobertaEncoder(config)
 
         self.pooler = RobertaPooler(config) if add_pooling_layer else None
+
+        # Do NOT set self.roberta because this is the base model.
+
+        # removed init_weights() in new version, because it's called inside post_init()
+        # # always call init_weights() in __init__() if intends to use as LM
+        # self.init_weights()
 
         self.attn_implementation = config._attn_implementation
         self.position_embedding_type = config.position_embedding_type
@@ -1016,6 +1040,8 @@ class RobertaForCausalLM(RobertaPreTrainedModel, GenerationMixin):
         self.roberta = RobertaModel(config, add_pooling_layer=False)
         self.lm_head = RobertaLMHead(config)
 
+        # The LM head weights require special treatment only when they are tied with the word embeddings
+
         # Initialize weights and apply final processing
         self.post_init()
 
@@ -1158,6 +1184,8 @@ class RobertaForMaskedLM(RobertaPreTrainedModel):
         self.roberta = RobertaModel(config, add_pooling_layer=False)
         self.lm_head = RobertaLMHead(config)
 
+        # The LM head weights require special treatment only when they are tied with the word embeddings
+
         # Initialize weights and apply final processing
         self.post_init()
 
@@ -1198,6 +1226,18 @@ class RobertaForMaskedLM(RobertaPreTrainedModel):
             loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`
         kwargs (`Dict[str, any]`, *optional*, defaults to `{}`):
             Used to hide legacy arguments that have been deprecated.
+
+        Examples::
+
+        from transformers import RobertaTokenizer, RobertaForMaskedLM
+        import torch
+
+        tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
+        model = RobertaForMaskedLM.from_pretrained('roberta-base')
+        input_ids = torch.tensor(tokenizer.encode("Hello, my dog is cute", add_special_tokens=True)).unsqueeze(0)  # Batch size 1
+        outputs = model(input_ids, labels=input_ids)
+        loss, prediction_scores = outputs[:2]
+
         """
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
@@ -1245,13 +1285,19 @@ class RobertaLMHead(nn.Module):
         self.layer_norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
 
         self.decoder = nn.Linear(config.hidden_size, config.vocab_size)
+        # disable bias in Linear to make the weight match input embedding.
+        
         self.bias = nn.Parameter(torch.zeros(config.vocab_size))
+
+        # Need a link between the two variables so that the bias is correctly resized with `resize_token_embeddings`
         self.decoder.bias = self.bias
+        # add bias attribute in decoder? why not directly enable bias in decoder?
 
     def forward(self, features, **kwargs):
         x = self.dense(features)
         x = gelu(x)
         x = self.layer_norm(x)
+        # This LayerNorm is placed right after nonlinear activation.
 
         # project back to size of vocabulary with bias
         x = self.decoder(x)
@@ -1312,6 +1358,19 @@ class RobertaForSequenceClassification(RobertaPreTrainedModel):
             Labels for computing the sequence classification/regression loss. Indices should be in `[0, ...,
             config.num_labels - 1]`. If `config.num_labels == 1` a regression loss is computed (Mean-Square loss), If
             `config.num_labels > 1` a classification loss is computed (Cross-Entropy).
+
+        Examples::
+
+        from transformers import RobertaTokenizer, RobertaForSequenceClassification
+        import torch
+
+        tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
+        model = RobertaForSequenceClassification.from_pretrained('roberta-base')
+        input_ids = torch.tensor(tokenizer.encode("Hello, my dog is cute", add_special_tokens=True)).unsqueeze(0)  # Batch size 1
+        labels = torch.tensor([1]).unsqueeze(0)  # Batch size 1
+        outputs = model(input_ids, labels=labels)
+        loss, logits = outputs[:2]
+
         """
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
@@ -1326,8 +1385,12 @@ class RobertaForSequenceClassification(RobertaPreTrainedModel):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
+        # outputs[0] is last layer's sequence output 
         sequence_output = outputs[0]
+        # sequence_output shape [batch_size, seq_len, hidden_size]
         logits = self.classifier(sequence_output)
+        # logits shape [batch_size, num_labels].
+        # RobertaClassificationHead internally only takes the first token of the sequence_output.
 
         loss = None
         if labels is not None:
@@ -1408,7 +1471,23 @@ class RobertaForMultipleChoice(RobertaPreTrainedModel):
             Labels for computing the multiple choice classification loss. Indices should be in `[0, ...,
             num_choices-1]` where `num_choices` is the size of the second dimension of the input tensors. (See
             `input_ids` above)
+
+        Examples::
+
+        from transformers import RobertaTokenizer, RobertaForMultipleChoice
+        import torch
+
+        tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
+        model = RobertaForMultipleChoice.from_pretrained('roberta-base')
+        choices = ["Hello, my dog is cute", "Hello, my cat is amazing"]
+        input_ids = torch.tensor([tokenizer.encode(s, add_special_tokens=True) for s in choices]).unsqueeze(0)  # Batch size 1, 2 choices
+        labels = torch.tensor(1).unsqueeze(0)  # Batch size 1
+        outputs = model(input_ids, labels=labels)
+        loss, classification_scores = outputs[:2]
+
         """
+        # input_ids shape (batch_size, num_choices, seq_length)
+
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
         num_choices = input_ids.shape[1] if input_ids is not None else inputs_embeds.shape[1]
 
@@ -1504,6 +1583,19 @@ class RobertaForTokenClassification(RobertaPreTrainedModel):
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for computing the token classification loss. Indices should be in `[0, ..., config.num_labels - 1]`.
+
+        Examples::
+
+        from transformers import RobertaTokenizer, RobertaForTokenClassification
+        import torch
+
+        tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
+        model = RobertaForTokenClassification.from_pretrained('roberta-base')
+        input_ids = torch.tensor(tokenizer.encode("Hello, my dog is cute", add_special_tokens=True)).unsqueeze(0)  # Batch size 1
+        labels = torch.tensor([1] * input_ids.size(1)).unsqueeze(0)  # Batch size 1
+        outputs = model(input_ids, labels=labels)
+        loss, scores = outputs[:2]
+
         """
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
@@ -1545,6 +1637,7 @@ class RobertaForTokenClassification(RobertaPreTrainedModel):
 
 class RobertaClassificationHead(nn.Module):
     """Head for sentence-level classification tasks."""
+    # use hidden vector of the first token of the sequence to represent the whole sentence. Like a BertPooler + classification.
 
     def __init__(self, config):
         super().__init__()
@@ -1560,6 +1653,8 @@ class RobertaClassificationHead(nn.Module):
         x = self.dropout(x)
         x = self.dense(x)
         x = torch.tanh(x)
+        # why need nonlinear activation?
+        # should add layer norm layer after nonlinear activation?
         x = self.dropout(x)
         x = self.out_proj(x)
         return x
@@ -1614,6 +1709,25 @@ class RobertaForQuestionAnswering(RobertaPreTrainedModel):
             Labels for position (index) of the end of the labelled span for computing the token classification loss.
             Positions are clamped to the length of the sequence (`sequence_length`). Position outside of the sequence
             are not taken into account for computing the loss.
+
+        Examples::
+
+        # The checkpoint roberta-large is not fine-tuned for question answering. Please see the
+        # examples/question-answering/run_squad.py example to see how to fine-tune a model to a question answering task.
+
+        from transformers import RobertaTokenizer, RobertaForQuestionAnswering
+        import torch
+
+        tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
+        model = RobertaForQuestionAnswering.from_pretrained('roberta-base')
+
+        question, text = "Who was Jim Henson?", "Jim Henson was a nice puppet"
+        input_ids = tokenizer.encode(question, text)
+        start_scores, end_scores = model(torch.tensor([input_ids]))
+
+        all_tokens = tokenizer.convert_ids_to_tokens(input_ids)
+        answer = ' '.join(all_tokens[torch.argmax(start_scores) : torch.argmax(end_scores)+1])
+
         """
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
@@ -1679,7 +1793,9 @@ def create_position_ids_from_input_ids(input_ids, padding_idx, past_key_values_l
     # The series of casts and type-conversions here are carefully balanced to both work with ONNX export and XLA.
     mask = input_ids.ne(padding_idx).int()
     incremental_indices = (torch.cumsum(mask, dim=1).type_as(mask) + past_key_values_length) * mask
+    # now padding tokens position index is 0
     return incremental_indices.long() + padding_idx
+    # now padding tokens position index is padding_idx
 
 
 __all__ = [

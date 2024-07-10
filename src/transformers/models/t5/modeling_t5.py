@@ -63,6 +63,15 @@ _CHECKPOINT_FOR_DOC = "google-t5/t5-small"
 # for the pretrained weights provided with the models
 ####################################################
 
+T5_PRETRAINED_MODEL_ARCHIVE_LIST = [
+    "google-t5/t5-small",
+    "google-t5/t5-base",
+    "google-t5/t5-large",
+    "google-t5/t5-3b",
+    "google-t5/t5-11b",
+    # See all T5 models at https://huggingface.co/models?filter=t5
+]
+
 
 ####################################################
 # This is a conversion method from TF 1.0 to PyTorch
@@ -341,6 +350,8 @@ class T5LayerFF(nn.Module):
         return hidden_states
 
 
+# In your own code if need to override a class but keep other classes unchanged, use the following replace decorator
+# @replace(T5Attention)
 class T5Attention(nn.Module):
     def __init__(
         self,
@@ -350,6 +361,7 @@ class T5Attention(nn.Module):
     ):
         super().__init__()
         self.is_decoder = config.is_decoder
+        # has_relative_attention_bias means whether to use relative position?
         self.has_relative_attention_bias = has_relative_attention_bias
         self.relative_attention_num_buckets = config.relative_attention_num_buckets
         self.relative_attention_max_distance = config.relative_attention_max_distance
@@ -366,6 +378,7 @@ class T5Attention(nn.Module):
                 "when creating this class."
             )
 
+        # T5 uses a linear layer instead of hidden vector split to produce multiple heads. So it has an additional layer to convert back to hidden_size intead of simply merging.
         # Mesh TensorFlow initialization to avoid scaling before softmax
         self.q = nn.Linear(self.d_model, self.inner_dim, bias=False)
         self.k = nn.Linear(self.d_model, self.inner_dim, bias=False)
@@ -445,11 +458,15 @@ class T5Attention(nn.Module):
         """Compute binned relative position bias"""
         if device is None:
             device = self.relative_attention_bias.weight.device
+        # shape [query_length, 1]
         if cache_position is None:
             context_position = torch.arange(query_length, dtype=torch.long, device=device)[:, None]
+        # shape [1, key_length]
         else:
             context_position = cache_position[:, None].to(device)
         memory_position = torch.arange(key_length, dtype=torch.long, device=device)[None, :]
+        # relation position is position index of keys relative to position index of querys
+        # all keys' relative position is negative if they are before (to the left of) query 
         relative_position = memory_position - context_position  # shape (query_length, key_length)
         relative_position_bucket = self._relative_position_bucket(
             relative_position,  # shape (query_length, key_length)
@@ -480,6 +497,8 @@ class T5Attention(nn.Module):
         # Input is (batch_size, seq_length, dim)
         # Mask is (batch_size, 1, 1, key_length) (non-causal encoder) or (batch_size, 1, seq_length, key_length) (causal decoder)
         batch_size, seq_length = hidden_states.shape[:2]
+
+        # does hidden_states include position embedding?
 
         # if key_value_states are provided this layer is used as a cross-attention layer for the decoder
         is_cross_attention = key_value_states is not None
@@ -560,6 +579,15 @@ class T5Attention(nn.Module):
 
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.view(batch_size, -1, self.inner_dim)
+
+        # # to use together with einsum() change above
+        # attn_output = torch.einsum("bxnqk,bnkd->bxnqd",
+        #                      attn_weights.view(kv_batch_size,-1,*attn_weights.size()[1:]),
+        #                      value_states)
+        # attn_output = attn_output.reshape(-1,*attn_output.size()[2:])
+        # attn_output = unshape(attn_output)
+
+
         attn_output = self.o(attn_output)
 
         outputs = (attn_output, past_key_value, position_bias)
@@ -644,6 +672,7 @@ class T5LayerCrossAttention(nn.Module):
 
 
 class T5Block(nn.Module):
+    # This is one T5 (Transformer) layer, includes SelfAttention, decoder only CrossAttention, FF (hidden -> intermediate -> hidden)
     def __init__(self, config, has_relative_attention_bias=False, layer_idx: Optional[int] = None):
         super().__init__()
         self.is_decoder = config.is_decoder
@@ -882,6 +911,7 @@ class T5Stack(T5PreTrainedModel):
     def __init__(self, config, embed_tokens=None):
         super().__init__(config)
 
+        # embed_tokens is a function, e.g., 
         self.embed_tokens = embed_tokens
         self.is_decoder = config.is_decoder
 
@@ -1000,6 +1030,7 @@ class T5Stack(T5PreTrainedModel):
             if self.embed_tokens is None:
                 raise ValueError("You have to initialize the model with valid token embeddings")
             inputs_embeds = self.embed_tokens(input_ids)
+        # does input_embeds include position??
 
         batch_size, seq_length = input_shape
 
@@ -1074,6 +1105,7 @@ class T5Stack(T5PreTrainedModel):
         all_hidden_states = () if output_hidden_states else None
         all_attentions = () if output_attentions else None
         all_cross_attentions = () if (output_attentions and self.is_decoder) else None
+        # position_bias is ?
         position_bias = None
         encoder_decoder_position_bias = None
 
@@ -1504,6 +1536,7 @@ class T5Model(T5PreTrainedModel):
 
         decoder_config = copy.deepcopy(config)
         decoder_config.is_decoder = True
+        # why False?
         decoder_config.is_encoder_decoder = False
         decoder_config.num_layers = config.num_decoder_layers
         self.decoder = T5Stack(decoder_config, self.shared)
@@ -1713,6 +1746,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel, GenerationMixin):
 
         decoder_config = copy.deepcopy(config)
         decoder_config.is_decoder = True
+        # why False?
         decoder_config.is_encoder_decoder = False
         decoder_config.num_layers = config.num_decoder_layers
         self.decoder = T5Stack(decoder_config, self.shared)
